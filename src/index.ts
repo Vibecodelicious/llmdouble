@@ -1,4 +1,4 @@
-// Public API of llmdouble. Story 3 adds `run` and `differential`.
+// Public API of llmdouble.
 
 export { startServer, MAX_BODY_BYTES, SERVER_ERRORS } from './core/server.js';
 export type { StartServerOptions, ServerHandle, Surface, ParseResult, RenderContext, Rendered, ErrorSpec } from './core/server.js';
@@ -30,6 +30,8 @@ export type {
   SurfaceName,
 } from './core/recording.js';
 export { load } from './assert/load.js';
+export { run, DEFAULT_TIMEOUT_MS } from './run/run.js';
+export type { RunOptions, RunResult, Exec } from './run/run.js';
 export { matchers } from './assert/matchers.js';
 export { BlockedError } from './assert/verdict.js';
 export type { Verdict, VerdictStatus } from './assert/verdict.js';
