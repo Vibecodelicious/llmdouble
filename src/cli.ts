@@ -148,7 +148,8 @@ export function formatRequestBlock(line: RequestLine, previousBytes: number | nu
   const delta = previousBytes === null ? '' : `   (${formatDelta(bytes - previousBytes)})`;
   const messages = line.normalized === null ? '-' : String(line.normalized.messages.length);
   const tools = line.normalized === null ? '-' : String(line.normalized.tools.length);
-  let block = `${RULE}\nreq ${line.seq}  ${line.method} ${line.path}  ${line.status}  ${served}  ${clock(line.at)}\n`;
+  const surface = line.surface ?? '-';
+  let block = `${RULE}\nreq ${line.seq}  ${line.method} ${line.path}  ${surface}  ${line.status}  ${served}  ${clock(line.at)}\n`;
   block += `  messages ${messages}   tools ${tools}   total ${formatNumber(bytes)} B${delta}\n`;
   if (raw) block += `  body ${line.body}\n`;
   return block;

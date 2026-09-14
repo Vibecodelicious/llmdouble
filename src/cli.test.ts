@@ -81,17 +81,27 @@ describe('parseServeArgs', () => {
 });
 
 describe('formatRequestBlock', () => {
-  test('prints seq, path, status, served kind, counts, bytes, and the delta', () => {
+  test('prints seq, path, surface, status, served kind, counts, bytes, and the delta', () => {
     const block = formatRequestBlock(line, 20);
-    expect(block).toMatch(/^─+\nreq 2 {2}POST \/v1\/messages {2}200 {2}scripted\[1\] {2}\d{2}:\d{2}:\d{2}\n {2}messages 3 {3}tools 2 {3}total 27 B {3}\(\+7\)\n$/);
+    expect(block).toMatch(
+      /^─+\nreq 2 {2}POST \/v1\/messages {2}anthropic {2}200 {2}scripted\[1\] {2}\d{2}:\d{2}:\d{2}\n {2}messages 3 {3}tools 2 {3}total 27 B {3}\(\+7\)\n$/,
+    );
     expect(formatRequestBlock(line, null)).toContain('total 27 B\n');
     expect(formatRequestBlock(line, 1027)).toContain('(-1,000)');
   });
 
-  test('names an aside, shows a bare kind for rejections, and dashes when nothing was normalised', () => {
+  test('shows the openai surface too', () => {
+    const block = formatRequestBlock({ ...line, path: '/v1/chat/completions', surface: 'openai' }, null);
+    expect(block).toContain('POST /v1/chat/completions  openai  200  ');
+  });
+
+  test('names an aside, shows a bare kind for rejections, dashes for an unmatched surface, and dashes when nothing was normalised', () => {
     expect(formatRequestBlock({ ...line, served: { kind: 'aside', index: 0, aside: 'title' } }, null)).toContain('  aside[0] title  ');
-    const rejected = formatRequestBlock({ ...line, status: 404, path: '/nope', served: { kind: 'unmatched', index: null, aside: null }, normalized: null }, null);
-    expect(rejected).toContain('POST /nope  404  unmatched  ');
+    const rejected = formatRequestBlock(
+      { ...line, status: 404, path: '/nope', surface: null, served: { kind: 'unmatched', index: null, aside: null }, normalized: null },
+      null,
+    );
+    expect(rejected).toContain('POST /nope  -  404  unmatched  ');
     expect(rejected).toContain('messages -   tools -');
   });
 
@@ -125,9 +135,9 @@ describe('serve', () => {
     const blocks = out.out.split('─'.repeat(60));
     expect(blocks).toHaveLength(5);
     const clock = '\\d\\d:\\d\\d:\\d\\d';
-    expect(blocks[1]).toMatch(new RegExp(`^\\nreq 1  POST /v1/messages  200  scripted\\[0\\]  ${clock}\\n  messages 1   tools 0   total ${bytes1} B\\n$`));
-    expect(blocks[2]).toMatch(new RegExp(`^\\nreq 2  POST /v1/messages  200  aside\\[0\\] title  ${clock}\\n  messages 1   tools 0   total ${bytes2} B   \\(\\+${bytes2! - bytes1!}\\)\\n$`));
-    expect(blocks[3]).toMatch(new RegExp(`^\\nreq 3  POST /other  404  unmatched  ${clock}\\n  messages -   tools -   total ${bytes3} B   \\(-${bytes2! - bytes3!}\\)\\n$`));
+    expect(blocks[1]).toMatch(new RegExp(`^\\nreq 1  POST /v1/messages  anthropic  200  scripted\\[0\\]  ${clock}\\n  messages 1   tools 0   total ${bytes1} B\\n$`));
+    expect(blocks[2]).toMatch(new RegExp(`^\\nreq 2  POST /v1/messages  anthropic  200  aside\\[0\\] title  ${clock}\\n  messages 1   tools 0   total ${bytes2} B   \\(\\+${bytes2! - bytes1!}\\)\\n$`));
+    expect(blocks[3]).toMatch(new RegExp(`^\\nreq 3  POST /other  -  404  unmatched  ${clock}\\n  messages -   tools -   total ${bytes3} B   \\(-${bytes2! - bytes3!}\\)\\n$`));
     expect(blocks[4]).toBe(`\n${formatSummary(summary)}\nrecording: ${record}\n`);
     expect(readRecording(record).requests).toHaveLength(3);
   });
@@ -139,6 +149,18 @@ describe('serve', () => {
     await post(handle.url, body);
     await handle.stop();
     expect(out.out).toContain(`\n  body ${body}\n`);
+  });
+
+  test('shows both surfaces in its per-request block', async () => {
+    const out = io();
+    const handle = await startServe({ scenario: scenarioPath, port: 0, record: join(dir, 'two-surfaces.jsonl'), raw: false }, out);
+    const anthropicBody = JSON.stringify({ model: 'm', stream: true, messages: [{ role: 'user', content: 'hi' }] });
+    const openaiBody = JSON.stringify({ model: 'm', messages: [{ role: 'user', content: 'hi' }] });
+    await post(handle.url, anthropicBody, '/v1/messages');
+    await post(handle.url, openaiBody, '/v1/chat/completions');
+    await handle.stop();
+    expect(out.out).toContain('POST /v1/messages  anthropic  200  ');
+    expect(out.out).toContain('POST /v1/chat/completions  openai  200  ');
   });
 });
 
