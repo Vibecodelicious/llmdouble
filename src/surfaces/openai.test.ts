@@ -78,6 +78,29 @@ describe('parseOpenAIRequest', () => {
     expect(parsed.normalized.messages[0]!.content).toEqual([{ type: 'tool_result', toolUseId: 'call_1', text: '340 lines' }]);
   });
 
+  test('a tool-role message with array content joins its text parts, so no JSON syntax leaks into the region text', () => {
+    const parsed = parseOpenAIRequest({
+      model: 'gpt-4o',
+      messages: [
+        {
+          role: 'tool',
+          tool_call_id: 'call_1',
+          content: [
+            { type: 'text', text: 'result part 1' },
+            { type: 'text', text: 'result part 2' },
+          ],
+        },
+      ],
+    });
+    expect(parsed).toMatchObject({ ok: true });
+    if (!parsed.ok) throw new Error('unreachable');
+    expect(parsed.normalized.messages[0]!.content[0]).toEqual({
+      type: 'tool_result',
+      toolUseId: 'call_1',
+      text: 'result part 1result part 2',
+    });
+  });
+
   test('tools[].function.name becomes tools[].name', () => {
     const parsed = parseOpenAIRequest({
       model: 'gpt-4o',

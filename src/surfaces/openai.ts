@@ -13,7 +13,11 @@ import type { ParseResult, RenderContext, Rendered, Surface } from '../core/serv
 
 export const OPENAI_PATH = '/v1/chat/completions';
 
-/** Content is fragmented into pieces this size (in JSON characters) for the streamed argument deltas. */
+/**
+ * Content is fragmented into pieces this size (in JSON characters) for the streamed argument deltas.
+ * The value is arbitrary: it is chosen only to force multi-fragment reassembly in tests, not to match
+ * any real provider's chunking.
+ */
 const TOOL_ARGUMENT_CHUNK_SIZE = 24;
 
 export const OPENAI_ERRORS = {
@@ -76,7 +80,7 @@ function normalizeMessageContent(message: Record<string, unknown>): NormalizedBl
       {
         type: 'tool_result',
         toolUseId: typeof message.tool_call_id === 'string' ? message.tool_call_id : '',
-        text: typeof message.content === 'string' ? message.content : JSON.stringify(message.content ?? '') ?? '',
+        text: toolResultText(message.content),
       },
     ];
   }
@@ -93,6 +97,18 @@ function normalizeMessageContent(message: Record<string, unknown>): NormalizedBl
     }
   }
   return blocks;
+}
+
+/** A tool-role message's `content`: kept as-is if a string, text parts joined if an array (mirrors anthropic.ts's toolResultText). */
+function toolResultText(content: unknown): string {
+  if (content === undefined || content === null) return '';
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => (isRecord(part) && part.type === 'text' && typeof part.text === 'string' ? part.text : JSON.stringify(part) ?? ''))
+      .join('');
+  }
+  return JSON.stringify(content) ?? '';
 }
 
 function parseToolArguments(raw: unknown): unknown {
@@ -148,7 +164,7 @@ function renderOpenAINonStream(response: ScriptedResponse, ctx: RenderContext): 
   const body = {
     id,
     object: 'chat.completion',
-    created: 0,
+    created: 0, // mirrors the Anthropic surface's no-wall-clock convention: deterministic output, nothing reads this field
     model: ctx.normalized.model,
     choices: [{ index: 0, message, finish_reason: stopReason(calls) }],
     usage: { prompt_tokens: usage.input, completion_tokens: usage.output, total_tokens: usage.input + usage.output },
@@ -166,6 +182,7 @@ function renderOpenAIStream(response: ScriptedResponse, ctx: RenderContext, incl
   const usage = usageOf(response);
   const calls = callsOf(response);
   const id = ctx.ids.next('chatcmpl-');
+  // created: 0 mirrors the Anthropic surface's no-wall-clock convention: deterministic output, nothing reads this field
   const base = { id, object: 'chat.completion.chunk', created: 0, model: ctx.normalized.model };
 
   const dataLines: unknown[] = [];
