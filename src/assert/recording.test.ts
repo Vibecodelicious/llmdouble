@@ -106,9 +106,14 @@ describe('every', () => {
     expect(rec.every.contains('SECRET')).toMatchObject({ status: 'FAIL', evidence: { failingSeqs: [1, 2] } });
   });
 
-  test('an empty or absent search text is BLOCKED', () => {
-    expect(three.every.doesNotContain('').status).toBe('BLOCKED');
-    expect(three.every.doesNotContain(undefined as unknown as string).status).toBe('BLOCKED');
+  test('an empty or absent search text is BLOCKED, with the recording\'s real count as evidence', () => {
+    expect(three.every.doesNotContain('')).toEqual({
+      status: 'BLOCKED',
+      claim: 'cannot evaluate every request does not contain "": the search text is empty or absent',
+      evidence: { count: 3 },
+    });
+    expect(three.every.doesNotContain(undefined as unknown as string)).toMatchObject({ status: 'BLOCKED', evidence: { count: 3 } });
+    expect(three.every.contains('').evidence).toEqual({ count: 3 });
   });
 });
 

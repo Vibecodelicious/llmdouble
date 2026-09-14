@@ -12,7 +12,12 @@ import { betweenPredicate, matchingPredicate, Region } from './region.js';
 import { Request } from './request.js';
 import { blocked, BlockedError, fail, pass, searchText, type Verdict } from './verdict.js';
 
-/** The run counts; `complete` is false when the file had no summary line (an unclean close). */
+/**
+ * The run counts. `complete` is false when the file had no summary line (an unclean close); every count
+ * is then computed from the request lines present, and `scripted` is the number of distinct scripted
+ * responses served (a lower bound), not the scenario's length. Check `complete` before treating any count
+ * as the run's.
+ */
 export interface RecordingSummary extends RunSummary {
   complete: boolean;
 }
@@ -80,7 +85,7 @@ export class Recording {
 
   private everyClaim(text: string, expectPresent: boolean): Verdict {
     const claim = `every request ${expectPresent ? 'contains' : 'does not contain'} ${JSON.stringify(text)}`;
-    if (searchText(text) === null) return blocked(`cannot evaluate ${claim}: the search text is empty or absent`, { count: 0 });
+    if (searchText(text) === null) return blocked(`cannot evaluate ${claim}: the search text is empty or absent`, { count: this.count });
     if (this.count === 0) return blocked(`cannot evaluate ${claim}: ${this.describe()} has no requests`, { count: 0 });
     const verdicts = this.requests.map((request) => (expectPresent ? request.contains(text) : request.doesNotContain(text)));
     const failingSeqs = this.requests.filter((_, i) => verdicts[i]!.status === 'FAIL').map((request) => request.seq);

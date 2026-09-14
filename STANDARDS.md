@@ -33,7 +33,7 @@
 - `src/assert/boundary.test.ts` scans every file under `src/assert/` and fails if an import resolves into `src/core/server`, `src/surfaces`, or `src/run`.
 - The assertion library's unit tests build recordings in memory with `src/assert/testing.ts`, whose raw body and normalised view are hand-written on purpose (the reader must not depend on the surface). Writer and reader are proven to agree in `src/fixtures/prune.test.ts`, which records the prune conversation with the real server and compares it to the checked-in fixture.
 - Fixtures under `src/assert/fixtures/*.jsonl` are recordings the real server wrote, checked in. Regenerate with `npm run fixtures` (builds, then runs `src/fixtures/prune.ts`) after any change to the recording format, the surface, or the fixture's conversation; `src/fixtures/prune.test.ts` fails until the checked-in file matches a fresh recording with `startedAt`, `url`, and `at` masked. Do not hand-edit a fixture: `src/assert/design-5-0.test.ts` shows how a test edits a copy to prove it can fail.
-- `toPass()` types for this repo's own suites come from `src/assert/matchers.vitest.d.ts`, a `.d.ts` that tsc checks but does not emit, so `dist/` never refers to vitest.
+- `toPass()` types for this repo's own suites come from `src/assert/matchers.vitest.d.ts`, a `.d.ts` that tsc checks but does not emit, so the package's emitted declarations never refer to vitest.
 - The Claude Code wiring demo is manual evidence recorded in story notes, not a CI test: CI runs with no credentials and no harness.
 
 ## File / directory conventions

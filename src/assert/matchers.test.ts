@@ -28,10 +28,12 @@ describe('toPass', () => {
     expect(() => expect(pass('x')).not.toPass()).toThrow(/expected the verdict not to pass/);
   });
 
-  test('a non-verdict fails rather than passing', () => {
+  test('a non-verdict fails rather than passing, under .not as well', () => {
     expect(() => expect(undefined).toPass()).toThrow(/expected a Verdict/);
     expect(() => expect(true).toPass()).toThrow(/expected a Verdict/);
     expect(() => expect({ status: 'PASS' }).toPass()).toThrow(/expected a Verdict/);
+    expect(() => expect(undefined).not.toPass()).toThrow(/expected a Verdict/);
+    expect(matchers.toPass.call({ isNot: true }, undefined).pass).toBe(true);
   });
 
   test('the matcher speaks the shared expect.extend protocol: { pass, message } with isNot on this', () => {

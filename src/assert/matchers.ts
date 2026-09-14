@@ -24,8 +24,11 @@ export interface MatcherContext {
 
 export const matchers = {
   toPass(this: MatcherContext | void, received: unknown): MatcherResult {
+    // Report the opposite of what `.not` wants for anything that is not a passing or failing verdict, so
+    // the assertion fails in either polarity.
+    const negated = this !== undefined && this !== null && this.isNot === true;
     if (!isVerdict(received)) {
-      return { pass: false, message: () => `expected a Verdict ({ status, claim, evidence }), received ${describe(received)}` };
+      return { pass: negated, message: () => `expected a Verdict ({ status, claim, evidence }), received ${describe(received)}` };
     }
     const detail = `${received.claim}\nevidence: ${JSON.stringify(received.evidence)}`;
     switch (received.status) {
@@ -33,11 +36,8 @@ export const matchers = {
         return { pass: true, message: () => `expected the verdict not to pass, but it passed: ${detail}` };
       case 'FAIL':
         return { pass: false, message: () => `FAIL: ${detail}` };
-      case 'BLOCKED': {
-        // Report the opposite of what `.not` wants so the assertion fails either way.
-        const negated = this !== undefined && this !== null && this.isNot === true;
+      case 'BLOCKED':
         return { pass: negated, message: () => `BLOCKED: ${detail}` };
-      }
     }
   },
 };
