@@ -32,6 +32,8 @@ export type {
 export { load } from './assert/load.js';
 export { run, DEFAULT_TIMEOUT_MS } from './run/run.js';
 export type { RunOptions, RunResult, Exec } from './run/run.js';
+export { differential } from './run/differential.js';
+export type { Arm, DifferentialOptions, DifferentialResult } from './run/differential.js';
 export { matchers } from './assert/matchers.js';
 export { BlockedError } from './assert/verdict.js';
 export type { Verdict, VerdictStatus } from './assert/verdict.js';
