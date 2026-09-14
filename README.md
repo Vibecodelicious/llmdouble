@@ -7,9 +7,9 @@ What the model sees *is* the request payload. Record the exact bytes a client se
 Two faces, one engine:
 
 - **Development tool.** Run `llmdouble serve`, point your agent at it, and watch what it actually sends, request by request, with byte deltas.
-- **Test infrastructure.** The same recording, read back by a test. The assertion library arrives in a later story; the recording format below is the contract between the two faces.
+- **Test infrastructure.** The same recording, read back by a test through the assertion library: content presence and absence, structure, scoped byte measurement of a region, cross-request claims, and a differential between two recordings. The recording format below is the contract between the two faces.
 
-This is the first slice: the Anthropic Messages surface, streaming only. The OpenAI chat-completions surface, the assertion library, and the `run`/`differential` orchestration follow.
+This slice is the Anthropic Messages surface, streaming only, plus the assertion library and `llmdouble diff`. The OpenAI chat-completions surface and the `run`/`differential` orchestration follow.
 
 ## Install
 
@@ -66,7 +66,26 @@ recording: ./llmdouble-2026-09-14T05-10-16-321Z.jsonl
 
 Each block shows the sequence number, method and path, HTTP status, what was served (`scripted[i]`, `repeated[i]`, `aside[i] <name>`, or a rejection kind), the message and tool counts from the normalised request, the request body's UTF-8 size, and the delta from the previous request. Sizes are bytes, not tokens; no tokenizer is involved.
 
-`llmdouble diff` is listed in the usage but exits 2 until the assertion library lands.
+## `llmdouble diff`
+
+```
+llmdouble diff <recording.jsonl> <N> <M>
+```
+
+Prints the JSON paths at which request `N`'s body differs from request `M`'s, one per line, both taken from the one recording (`N` and `M` are `seq` values). The comparison is over the parsed raw bodies, so ids and every wire field count. Exits 0 whether or not they differ (`request 2 and request 2 are identical` when they do not), and 2 with a message when an argument is bad, the recording cannot be read, or a request number is absent.
+
+```
+$ llmdouble diff recording.jsonl 1 3
+$.messages[0].content
+$.messages[1].content
+$.messages[2].content
+$.messages[3].content
+$.messages[4].content
+$ llmdouble diff recording.jsonl 1 9
+request 9 is absent: recording recording.jsonl has 3 requests
+```
+
+A path names the deepest node at which the two sides differ: a leaf with different values, a key present on one side only, an array element past the shorter length, or a node whose kinds differ (a string on one side, an array on the other).
 
 ## Scenarios
 
@@ -154,7 +173,83 @@ A JSONL file: one `run` line, one `request` line per request in receipt order, o
 - `responseBody` is the exact response text: the SSE stream for a served response, the JSON error otherwise.
 - The summary counts: `scripted` is how many responses the scenario scripts; `served` is how many requests the main sequence answered (`scripted` plus `repeated` kinds); the rest count requests by kind. A file with no `summary` line is a run that did not close cleanly and is still readable.
 
-Reading it back: `jq -c 'select(.type=="request") | {seq, path, status, served}' llmdouble-*.jsonl`.
+Reading it back: `jq -c 'select(.type=="request") | {seq, path, status, served}' llmdouble-*.jsonl`, or `load` below.
+
+## Asserting over a recording
+
+The design this tool implements (`DESIGN-test-specification-language.md` §5.0) opens with this test. With the shipped names, against a recording in which the client archived the messages between "step one" and "step four" before its last request:
+
+```ts
+import { load, matchers } from 'llmdouble';
+
+expect.extend(matchers);
+
+const rec = load('./recordings/refactor.jsonl');
+
+expect(rec.count).toBe(3);
+expect(rec.last.doesNotContain(process.env.API_SECRET!)).toPass();
+expect(rec.last.tools.registered).toContain('read_file');
+
+const archived = rec.messagesBetween({ from: 'step one', to: 'step four' });
+expect(rec.last.footprintOf(archived)).toBe(0);
+expect(rec.request(1).footprintOf(archived)).toBeGreaterThan(0);
+```
+
+`src/assert/design-5-0.test.ts` is exactly this, against `src/assert/fixtures/prune.jsonl`, which the server recorded from such a client; the test's second half edits the fixture to leave the archived text in place and proves the assertions then fail.
+
+### Verdicts
+
+Content claims return a `Verdict`, a plain object: `{ status: 'PASS' | 'FAIL' | 'BLOCKED', claim, evidence }`. **BLOCKED** means the apparatus could not evaluate the claim, and it exists because an empty recording satisfies every absence claim: if capture broke or nothing was recorded, `doesNotContain` would hold trivially. Any assertion whose inputs are absent reports BLOCKED, never PASS: `every` over an empty recording, a search text that is empty or `undefined` (an unset `process.env.SECRET`), a `system` claim on a request the surface could not normalise.
+
+Methods that return a literal rather than a verdict (`rec.last`, `rec.request(9)`, `rec.servedBy(2)`, `req.messages`, `req.footprintOf(region)`) throw `BlockedError` in the same situations; `error.verdict.claim` names the cause. Either way the test fails; neither way can it pass.
+
+`matchers.toPass()` is the one runner integration, in the `expect.extend` protocol vitest, jest, and bun:test share: PASS passes, FAIL fails with the claim and evidence, BLOCKED fails with a message beginning `BLOCKED:`, and BLOCKED fails under `.not` too. Types for the matcher are the consumer's three lines, for vitest:
+
+```ts
+declare module 'vitest' {
+  interface Assertion<T = unknown> { toPass(): T }
+}
+```
+
+### The vocabulary
+
+| | |
+|---|---|
+| `rec.count`, `rec.requests` | every recorded request, rejections included |
+| `rec.first`, `rec.last`, `rec.request(n)` | by `seq` (1-based); `BlockedError` when absent |
+| `rec.servedBy(i)` | the one request served by scripted response `i`; asides and repeats never match; `BlockedError` when none or more than one |
+| `rec.summary` | the counts, plus `complete: false` when the file had no summary line (the run did not close cleanly) |
+| `req.contains(text)`, `req.doesNotContain(text)` | over `raw.body`, the exact bytes; a hit's `evidence.offset` is where |
+| `req.system.contains(text)`, `.doesNotContain(text)` | over the normalised system text |
+| `req.messages.count`, `.roles`, `.texts` | the normalised view; `texts` concatenates every block, tool inputs as JSON |
+| `req.tools.registered` | tool names in wire order |
+| `req.totalBytes` | UTF-8 length of `raw.body`; a literal with no verdict attached |
+| `rec.messagesMatching(text)` | a region: every message whose text contains the literal |
+| `rec.messagesBetween({ from, to })` | a region: the span from the first message containing `from` through the first later message containing `to` |
+| `req.footprintOf(region)` | UTF-8 bytes of the wire messages the region selects in this request |
+| `rec.every.contains(text)`, `.doesNotContain(text)` | across every request's `raw.body`; FAIL lists `evidence.failingSeqs`; BLOCKED when empty |
+| `rec.diff(other)` | a `Divergence`: per request, the JSON paths at which the parsed bodies differ |
+| `divergence.onlyIn(selector)` | PASS only when at least one difference exists and every difference is inside the selector |
+
+### Regions and measurement
+
+A region is a content predicate re-evaluated against each request, never a resolved set of message indices. Content that moved to a different position still matches; a request where the predicate matches nothing measures 0. The predicate runs over the normalised message texts; the bytes come from the wire: `footprintOf` sums the UTF-8 length of `JSON.stringify` of the raw body's `messages[i]` at each selected index. A region that matches nothing in any request of the recording is unanchored, and measuring it throws `BlockedError`, because a row of satisfied zeroes is indistinguishable from removed content.
+
+Measurement is per request and the comparison is yours: `expect(rec.last.footprintOf(region)).toBeLessThan(rec.request(1).footprintOf(region))`. Nothing packages a cross-request comparison as a verdict, because a region can legitimately shrink, grow, or move for reasons unrelated to the feature under test, and whole-payload deltas are not a sound claim at all: a system that injects and removes in the same request can grow the payload while pruning correctly. `totalBytes` is readable with the same restraint.
+
+### Differential
+
+`rec.diff(other)` pairs requests strictly by array position and reports the differing leaf paths per request (`["$"]` for a request only one side has). "Differs somewhere" is nearly always true, so the verdict is `onlyIn`:
+
+```ts
+const d = on.diff(off);
+expect(d.onlyIn({ messages: [2, 3] })).toPass();      // 1-based, inclusive: $.messages[1] and $.messages[2]
+expect(d.onlyIn({ paths: ['$.messages', '$.system'] })).toPass();
+```
+
+PASS requires at least one difference and every difference under the selector; identical recordings FAIL with claim `recordings identical`; anything outside is listed in `evidence.outside`. A prefix covers what is nested under it and stops at a path boundary (`$.messages[1]` does not cover `$.messages[10]`). Requests that exist on one side only diverge at `$`, outside every selector, so assert equal counts before relying on the pairing.
+
+`run` and `differential`, which produce the two recordings by executing something against a live server, arrive in a later story; `load` and `close()` produce them today.
 
 ## Programmatic use
 
@@ -165,10 +260,11 @@ const server = await startServer({ scenario: './scenario.json' });   // or an in
 // server.url        -> 'http://127.0.0.1:<port>'
 // server.recordPath -> the JSONL path (opts.record, or a file under the OS temp dir)
 // ... point a client at server.url ...
-const summary = await server.close();                                 // writes the summary line, returns the counts
+const rec = await server.close();                                     // writes the summary line, returns the Recording loaded from the file
+expect(rec.last.doesNotContain(secret)).toPass();
 ```
 
-`startServer` options: `scenario` (path or object), `port` (default 0), `host` (only `'127.0.0.1'` is accepted), `record` (JSONL path), and `onRequest(line)`, called with each request line as it is recorded. `readRecording(path)` parses a recording file. The scenario, request-line, and normalised-request types are exported from the package root.
+`startServer` options: `scenario` (path or object), `port` (default 0), `host` (only `'127.0.0.1'` is accepted), `record` (JSONL path), and `onRequest(line)`, called with each request line as it is recorded. `close()` returns what `load(server.recordPath)` returns. `readRecording(path)` is the lower-level parse into raw lines. The scenario, request-line, normalised-request, and assertion types (`Recording`, `Request`, `Region`, `Verdict`, `Divergence`) are exported from the package root.
 
 ## What this cannot tell you
 

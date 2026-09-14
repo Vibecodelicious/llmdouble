@@ -17,7 +17,7 @@
 
 - Runtime dependencies: none. A change that adds one needs a justification in the commit body and an update to this document.
 - Dev dependencies: `typescript`, `vitest`, and `@types/node` only.
-- `package-lock.json` is committed; CI installs with `npm ci`.
+- `package-lock.json` is committed; CI installs with `npm ci`. Version ranges in `package.json` are kept in step with what the lock resolves.
 
 ## Linting / formatting
 
@@ -31,12 +31,15 @@
 - Server behaviour is tested over a real `127.0.0.1` socket with `node:http` requests, reading the SSE body and asserting exact event order. Nothing mocks the network.
 - Scenario validation, `when` matching, normalisation, recording, and SSE rendering have unit tests with table cases over every field, operator, and error row.
 - `src/assert/boundary.test.ts` scans every file under `src/assert/` and fails if an import resolves into `src/core/server`, `src/surfaces`, or `src/run`.
+- The assertion library's unit tests build recordings in memory with `src/assert/testing.ts`, whose raw body and normalised view are hand-written on purpose (the reader must not depend on the surface). Writer and reader are proven to agree in `src/fixtures/prune.test.ts`, which records the prune conversation with the real server and compares it to the checked-in fixture.
+- Fixtures under `src/assert/fixtures/*.jsonl` are recordings the real server wrote, checked in. Regenerate with `npm run fixtures` (builds, then runs `src/fixtures/prune.ts`) after any change to the recording format, the surface, or the fixture's conversation; `src/fixtures/prune.test.ts` fails until the checked-in file matches a fresh recording with `startedAt`, `url`, and `at` masked. Do not hand-edit a fixture: `src/assert/design-5-0.test.ts` shows how a test edits a copy to prove it can fail.
+- `toPass()` types for this repo's own suites come from `src/assert/matchers.vitest.d.ts`, a `.d.ts` that tsc checks but does not emit, so `dist/` never refers to vitest.
 - The Claude Code wiring demo is manual evidence recorded in story notes, not a CI test: CI runs with no credentials and no harness.
 
 ## File / directory conventions
 
 - `src/index.ts` — the public API. Consumers import from here (or from `dist/index.js`), never from internal paths.
-- `src/cli.ts` — the `llmdouble` command (`serve`; `diff` arrives with the assertion library).
+- `src/cli.ts` — the `llmdouble` command: `serve` and `diff`.
 - `src/core/` — the engine, surface-neutral:
   - `scenario.ts` — scenario loading and validation; errors name the offending path (`responses[2].calls[0].tool`).
   - `matcher.ts` — `when:` evaluation for asides.
@@ -46,7 +49,17 @@
   - `sse.ts` — server-sent events formatting and parsing.
   - `server.ts` — `startServer`, routing, the body limit, asides, the cursor, the error matrix, recording.
 - `src/surfaces/` — one module per provider wire format, each exporting a `Surface` (`parse` + `render`). The server owns everything that is not wire-format specific.
-- `src/assert/` — the assertion library (story 2). Reads recordings; imports nothing from `core/server`, `surfaces`, or `run`.
+- `src/assert/` — the assertion library. Reads recordings; imports nothing from `core/server`, `surfaces`, or `run`:
+  - `verdict.ts` — `Verdict`, `BlockedError`, and the empty-search-text rule.
+  - `load.ts` — `load(path)`.
+  - `recording.ts` — `Recording`: navigation, `servedBy`, `every`, regions, `diff`; the counts for a summary-less file.
+  - `request.ts` — `Request`: raw-body and system claims, `messages`, `tools`, `totalBytes`, `footprintOf`.
+  - `region.ts` — `Region` as a per-request predicate with the anchoring check; `messagesMatching` and `messagesBetween` predicates.
+  - `divergence.ts` — the JSON leaf diff, `Divergence`, `onlyIn`.
+  - `matchers.ts` — `toPass()` in the shared `expect.extend` shape.
+  - `testing.ts` — in-memory recordings for the tests here; not exported from the package.
+  - `fixtures/` — server-written recordings, checked in (see Testing).
+- `src/fixtures/` — the fixture generators and the writer/reader agreement test; they drive the server, which is why they are not under `src/assert/`.
 - `src/run/` — `run` and `differential` (story 3).
 - `examples/scenarios/` — scenario files the README refers to.
 
