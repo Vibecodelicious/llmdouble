@@ -25,7 +25,9 @@
     "fixtures": "tsc -p tsconfig.json && node dist/fixtures/prune.js"
   },
   "devDependencies": {
+    "@ai-sdk/openai-compatible": "2.0.41",
     "@types/node": "^22.20.2",
+    "ai": "6.0.168",
     "typescript": "^5.9.3",
     "vitest": "^3.2.7"
   }
