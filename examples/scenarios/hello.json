@@ -1,0 +1,19 @@
+{
+  "responses": [
+    { "say": "Hello from llmdouble.", "usage": { "input": 12, "output": 5 } },
+    {
+      "say": "I'll read that file first.",
+      "calls": [{ "tool": "read_file", "with": { "path": "src/parser.ts" } }],
+      "usage": { "input": 4200, "output": 180 }
+    },
+    { "say": "Done." }
+  ],
+  "aside": [
+    {
+      "name": "title",
+      "when": { "system": { "contains": "Generate a short, descriptive title" } },
+      "say": "Untitled",
+      "usage": { "input": 0, "output": 0 }
+    }
+  ]
+}
