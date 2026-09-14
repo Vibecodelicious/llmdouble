@@ -99,6 +99,15 @@ describe('run with a string exec', () => {
     expect(readFileSync(join(cwd, 'run.stderr.log'), 'utf8')).toBe('setup-err\nexec-err\n');
   });
 
+  test('a second run at the same record path starts the logs fresh, like the recording', async () => {
+    const { cwd, record } = fresh();
+    await run(scenario, { setup: 'echo setup-one', exec: 'echo run-one; echo err-one >&2', cwd, record });
+    const rec = await run(scenario, { setup: 'echo setup-two', exec: 'echo run-two; echo err-two >&2', cwd, record });
+    expect(rec.exitCode).toBe(0);
+    expect(readFileSync(join(cwd, 'run.stdout.log'), 'utf8')).toBe('setup-two\nrun-two\n');
+    expect(readFileSync(join(cwd, 'run.stderr.log'), 'utf8')).toBe('err-two\n');
+  });
+
   test('a non-zero exit is returned, not thrown', async () => {
     const { cwd, record } = fresh();
     const rec = await run(scenario, { exec: 'exit 3', cwd, record });

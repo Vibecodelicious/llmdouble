@@ -11,7 +11,7 @@
 // the run the moment it happens rather than at the timeout.
 
 import { spawn } from 'node:child_process';
-import { closeSync, openSync } from 'node:fs';
+import { closeSync, openSync, writeFileSync } from 'node:fs';
 import type { Recording } from '../assert/recording.js';
 import type { Scenario } from '../core/scenario.js';
 import { startServer } from '../core/server.js';
@@ -30,7 +30,11 @@ export interface RunOptions {
   exec: Exec;
   /** Environment for `setup` and `exec`, over the current process's; `$URL` is substituted in every value. */
   env?: Record<string, string>;
-  /** A shell command run before `exec` with the same env and cwd; `$URL` substituted. A non-zero exit fails the run. */
+  /**
+   * A shell command run before `exec` with the same env and cwd; `$URL` substituted. A non-zero exit fails the run.
+   * Its process group is swept when it exits, like `exec`'s: anything that must outlive `setup` belongs in `exec`
+   * (or a function `exec`).
+   */
   setup?: string;
   /** Working directory for `setup` and `exec`; default the current directory. */
   cwd?: string;
@@ -73,10 +77,14 @@ export async function run(scenario: string | Scenario, options: RunOptions): Pro
     },
   });
   const deadline = Date.now() + timeoutMs;
+  const logs = logPaths(server.recordPath);
+  // Written fresh by each run, like the recording; setup and exec then append to them in order.
+  writeFileSync(logs.stdout, '');
+  writeFileSync(logs.stderr, '');
   const shell: ShellOptions = {
     cwd: options.cwd,
     env: { ...process.env, ...substituteEnv(options.env ?? {}, server.url) },
-    logs: logPaths(server.recordPath),
+    logs,
     deadline,
     signal: control.signal,
   };
