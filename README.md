@@ -9,7 +9,7 @@ Two faces, one engine:
 - **Development tool.** Run `llmdouble serve`, point your agent at it, and watch what it actually sends, request by request, with byte deltas.
 - **Test infrastructure.** The same recording, read back by a test through the assertion library: content presence and absence, structure, scoped byte measurement of a region, cross-request claims, and a differential between two recordings. The recording format below is the contract between the two faces.
 
-This slice is the Anthropic Messages surface, streaming only, plus the assertion library and `llmdouble diff`. The OpenAI chat-completions surface and the `run`/`differential` orchestration follow.
+This slice is the Anthropic Messages surface, streaming only, plus the assertion library, `llmdouble diff`, and `run`/`differential`, which execute a system under test against a live server and hand back its recording. The OpenAI chat-completions surface follows.
 
 ## Install
 
@@ -65,6 +65,8 @@ recording: ./llmdouble-2026-09-14T05-10-16-321Z.jsonl
 ```
 
 Each block shows the sequence number, method and path, HTTP status, what was served (`scripted[i]`, `repeated[i]`, `aside[i] <name>`, or a rejection kind), the message and tool counts from the normalised request, the request body's UTF-8 size, and the delta from the previous request. Sizes are bytes, not tokens; no tokenizer is involved.
+
+If the server itself fails while serving (the recording file can no longer be written, for instance), it answers nothing from then on, `serve` exits 1 with the message, and the recording has no summary line: a run that did not close cleanly, never a run that looks complete.
 
 ## `llmdouble diff`
 
@@ -175,6 +177,39 @@ A JSONL file: one `run` line, one `request` line per request in receipt order, o
 
 Reading it back: `jq -c 'select(.type=="request") | {seq, path, status, served}' llmdouble-*.jsonl`, or `load` below.
 
+## Running a system under test
+
+`run` starts a server on an ephemeral port, executes something against it, stops the server, and returns the recording:
+
+```ts
+import { run } from 'llmdouble';
+
+const rec = await run('./examples/echo-client/scenario.json', {
+  exec: 'node examples/echo-client/client.mjs',
+  env: { ANTHROPIC_BASE_URL: '$URL', ANTHROPIC_API_KEY: 'x', ECHO_FEATURE: '1' },
+});
+rec.count;      // 2
+rec.exitCode;   // 0
+```
+
+- `$URL` is the listen address (`http://127.0.0.1:<port>`) and is substituted in `exec`, `setup`, and every `env` value; `env` is laid over the current process's environment. A function `exec` receives `{ url }` instead and is awaited, for drivers that run several processes against one server.
+- A string `exec` runs under `sh -c` in `cwd` (default: the current directory), in its own process group. `setup`, when given, runs first the same way; a non-zero exit from `setup` throws, because an off arm whose patch did not apply must not be compared as if it had.
+- A non-zero exit from `exec` is data: `run` returns normally with `exitCode` set (`null` for a function `exec` or a process that ended by a signal). Its stdout and stderr are appended to `<record>.stdout.log` and `<record>.stderr.log` next to the recording.
+- `timeoutMs` (default 120000) covers `setup` and `exec` together. At the deadline the process group is killed (SIGTERM, then SIGKILL a second later), the server is closed so the recording is complete, and `run` throws an error that names the recording path. Whatever `exec` left running in its group when it exited is killed too.
+- A server that cannot start throws before anything is executed. A server that fails during the run (see `serve` above) aborts it at once: the command is killed and `run` throws with the cause and the recording path rather than waiting for the timeout.
+- `record` is the recording path; the default is a file under the OS temp directory.
+
+The example client under `examples/echo-client/` is a stand-in for a harness with a feature flag. It sends two requests; with `ECHO_FEATURE=1` it replaces a message marked `[archive-me]` with the placeholder `[archived]` before its second request. To watch it by hand:
+
+```sh
+npm run build
+node dist/cli.js serve --scenario examples/echo-client/scenario.json
+# in another shell, with the port the listening line printed:
+ANTHROPIC_BASE_URL=http://127.0.0.1:<port> ECHO_FEATURE=1 node examples/echo-client/client.mjs
+```
+
+`src/run/example.test.ts` runs the same client through `run` and `differential` and asserts over the recordings; `npx vitest run src/run/example.test.ts` runs it alone. It needs no network and no credentials, which is how it runs in CI.
+
 ## Asserting over a recording
 
 The design this tool implements (`DESIGN-test-specification-language.md` §5.0) opens with this test. With the shipped names, against a recording in which the client archived the messages between "step one" and "step four" before its last request:
@@ -237,7 +272,7 @@ A region is a content predicate re-evaluated against each request, never a resol
 
 Measurement is per request and the comparison is yours: `expect(rec.last.footprintOf(region)).toBeLessThan(rec.request(1).footprintOf(region))`. Nothing packages a cross-request comparison as a verdict, because a region can legitimately shrink, grow, or move for reasons unrelated to the feature under test, and whole-payload deltas are not a sound claim at all: a system that injects and removes in the same request can grow the payload while pruning correctly. `totalBytes` is readable with the same restraint.
 
-### Differential
+### Diffing two recordings
 
 `rec.diff(other)` pairs requests strictly by array position and reports the differing leaf paths per request (`["$"]` for a request only one side has). "Differs somewhere" is nearly always true, so the verdict is `onlyIn`:
 
@@ -249,7 +284,32 @@ expect(d.onlyIn({ paths: ['$.messages', '$.system'] })).toPass();
 
 PASS requires at least one difference and every difference under the selector; identical recordings FAIL with claim `recordings identical`; anything outside is listed in `evidence.outside`. A prefix covers what is nested under it and stops at a path boundary (`$.messages[1]` does not cover `$.messages[10]`). Requests that exist on one side only diverge at `$`, outside every selector, so assert equal counts before relying on the pairing.
 
-`run` and `differential`, which produce the two recordings by executing something against a live server, arrive in a later story; `load` and `close()` produce them today.
+`differential` below produces the two recordings; `load` and `close()` do too.
+
+## Differential
+
+A suite whose absence claims always pass proves nothing: broken capture, an empty body, or a wrong path pass forever. `differential` runs the same scenario twice, once with the feature on and once with it off, on separate servers with separate recordings, so the test can require the opposite result from the off arm (design §5.7). From `src/run/example.test.ts`:
+
+```ts
+import { differential, matchers } from 'llmdouble';
+
+expect.extend(matchers);
+
+const { on, off } = await differential('./examples/echo-client/scenario.json', {
+  exec: 'node examples/echo-client/client.mjs',
+  env: { ANTHROPIC_BASE_URL: '$URL', ANTHROPIC_API_KEY: 'x' },
+  on: { env: { ECHO_FEATURE: '1' } },
+  off: { env: { ECHO_FEATURE: '0' } },
+});
+
+expect(on.diff(off).onlyIn({ messages: [2, 2] })).toPass();   // the feature changed message 2 of request 2 and nothing else
+expect(off.last.contains('[archive-me]')).toPass();            // present when the feature is off
+expect(on.last.doesNotContain('[archive-me]')).toPass();       // absent when it is on
+```
+
+Each arm is `{ exec?, env?, setup?, scenario? }`. Per-arm `env` merges over the shared `env`; per-arm `exec`, `setup`, and `scenario` replace the shared ones; `cwd` and `timeoutMs` are shared. An arm accepts a `setup` command as readily as an environment variable, for a system whose off arm is a different artifact (`on: { setup: 'npm run apply:patch' }`, `off: { setup: 'npm run apply:restore' }`), and its own `scenario`, for an off arm where the scripted tool is not registered. The arms run sequentially, on first. Both results are `run` results, so the whole vocabulary above applies to each; build regions per arm (`on.messagesMatching(...)` for `on`, `off.messagesMatching(...)` for `off`).
+
+The example test's second half is the negative control: it copies the client with the flag check replaced by `false`, runs the same differential, and asserts that `onlyIn` FAILs with `recordings identical`. That is the proof the apparatus can fail, and it is the test to copy when pointing the differential at something real.
 
 ## Programmatic use
 
@@ -264,7 +324,7 @@ const rec = await server.close();                                     // writes 
 expect(rec.last.doesNotContain(secret)).toPass();
 ```
 
-`startServer` options: `scenario` (path or object), `port` (default 0), `host` (only `'127.0.0.1'` is accepted), `record` (JSONL path), and `onRequest(line)`, called with each request line as it is recorded. `close()` returns what `load(server.recordPath)` returns. `readRecording(path)` is the lower-level parse into raw lines. The scenario, request-line, normalised-request, and assertion types (`Recording`, `Request`, `Region`, `Verdict`, `Divergence`) are exported from the package root.
+`startServer` options: `scenario` (path or object), `port` (default 0), `host` (only `'127.0.0.1'` is accepted), `record` (JSONL path), `onRequest(line)`, called with each request line as it is recorded, and `onError(error)`, called once if serving fails (the recording cannot be appended, a surface's render throws, `onRequest` throws); after that the server answers nothing and `close()` throws the same error without writing a summary line. `close()` otherwise returns what `load(server.recordPath)` returns. `readRecording(path)` is the lower-level parse into raw lines. `run` and `differential` are built on it. The scenario, request-line, normalised-request, run (`RunOptions`, `RunResult`, `Arm`, `DifferentialOptions`), and assertion types (`Recording`, `Request`, `Region`, `Verdict`, `Divergence`) are exported from the package root.
 
 ## What this cannot tell you
 

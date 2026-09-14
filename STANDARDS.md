@@ -34,6 +34,8 @@
 - The assertion library's unit tests build recordings in memory with `src/assert/testing.ts`, whose raw body and normalised view are hand-written on purpose (the reader must not depend on the surface). Writer and reader are proven to agree in `src/fixtures/prune.test.ts`, which records the prune conversation with the real server and compares it to the checked-in fixture.
 - Fixtures under `src/assert/fixtures/*.jsonl` are recordings the real server wrote, checked in. Regenerate with `npm run fixtures` (builds, then runs `src/fixtures/prune.ts`) after any change to the recording format, the surface, or the fixture's conversation; `src/fixtures/prune.test.ts` fails until the checked-in file matches a fresh recording with `startedAt`, `url`, and `at` masked. Do not hand-edit a fixture: `src/assert/design-5-0.test.ts` shows how a test edits a copy to prove it can fail.
 - `toPass()` types for this repo's own suites come from `src/assert/matchers.vitest.d.ts`, a `.d.ts` that tsc checks but does not emit, so the package's emitted declarations never refer to vitest.
+- `src/run/example.test.ts` is the end-to-end proof: it runs `examples/echo-client/client.mjs` through `run` and `differential` and asserts the design's §5.0 and §5.7 claims over the recordings, then edits a copy of the client to prove the differential can fail. It runs in CI with no network and no credentials; nothing harness-shaped is needed.
+- Tests of `run` drive `node -e` one-liners and shell snippets as the system under test. Every such test is bounded (an explicit `timeoutMs`, a process the command exits on its own) and leaves no process behind: a test that starts something long-lived proves it dead afterwards.
 - The Claude Code wiring demo is manual evidence recorded in story notes, not a CI test: CI runs with no credentials and no harness.
 
 ## File / directory conventions
@@ -47,7 +49,7 @@
   - `recording.ts` — the JSONL writer and reader, header redaction, run counts.
   - `ids.ts` — monotonic id counters.
   - `sse.ts` — server-sent events formatting and parsing.
-  - `server.ts` — `startServer`, routing, the body limit, asides, the cursor, the error matrix, recording.
+  - `server.ts` — `startServer`, routing, the body limit, asides, the cursor, the error matrix, recording, and the failure rule: a failure while serving destroys the client's socket, reaches `onError` once, refuses every later request, and makes `close()` throw instead of writing a summary line.
 - `src/surfaces/` — one module per provider wire format, each exporting a `Surface` (`parse` + `render`). The server owns everything that is not wire-format specific.
 - `src/assert/` — the assertion library. Reads recordings; imports nothing from `core/server`, `surfaces`, or `run`:
   - `verdict.ts` — `Verdict`, `BlockedError`, and the empty-search-text rule.
@@ -60,12 +62,20 @@
   - `testing.ts` — in-memory recordings for the tests here; not exported from the package.
   - `fixtures/` — server-written recordings, checked in (see Testing).
 - `src/fixtures/` — the fixture generators and the writer/reader agreement test; they drive the server, which is why they are not under `src/assert/`.
-- `src/run/` — `run` and `differential` (story 3).
+- `src/run/` — process orchestration around the server; imports core and assert:
+  - `run.ts` — `run`: `$URL` substitution, `sh -c` in a detached process group, setup then exec, one deadline for both, the group killed on timeout (SIGTERM, then SIGKILL) and swept after exit, stdout and stderr appended to files next to the recording, a server failure aborting the run at once.
+  - `differential.ts` — `differential`: the arm merge (`env` merged, `exec`/`setup`/`scenario` replaced, `cwd`/`timeoutMs` shared) and two sequential `run`s.
+  - `example.test.ts` — the design §5.0 and §5.7 test against the example client, and its negative control.
 - `examples/scenarios/` — scenario files the README refers to.
+- `examples/echo-client/` — `client.mjs` and `scenario.json`: a dependency-free stand-in for a harness with a feature flag, documented by the README's "Running a system under test" section. Nothing in it is specific to any real harness.
 
 ## Import boundary
 
 `src/assert/**` may import from `src/core/normalize`, `src/core/recording`, `src/core/scenario`, and `node:*`, and nothing from `src/core/server`, `src/surfaces`, or `src/run`. The assertion library must be usable against a recording file with no server in the process. The boundary test enforces this by scanning import specifiers; keep it passing rather than exempting a file.
+
+## Process lifecycle
+
+A string `exec` is spawned as `sh -c` with `detached: true`, so the command and everything it starts share a process group that `run` can signal as a unit (`process.kill(-pid, ...)`). Stdio goes to file descriptors, not pipes, so a grandchild holding a pipe open cannot stall the parent's exit. A run never leaves a process behind: the group is killed at the deadline and swept when the command exits.
 
 ## Adding a surface
 
