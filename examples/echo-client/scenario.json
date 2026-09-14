@@ -1,0 +1,6 @@
+{
+  "responses": [
+    { "say": "The parser has three passes: lex, parse, lower.", "usage": { "input": 900, "output": 20 } },
+    { "say": "Done.", "usage": { "input": 300, "output": 2 } }
+  ]
+}
