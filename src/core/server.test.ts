@@ -121,6 +121,20 @@ describe('startServer', () => {
     expect(new URL(server.url).port).toBe(port);
   });
 
+  test('a busy port rejects with EADDRINUSE and releases its own listener', async () => {
+    const holder = await start();
+    const { port } = new URL(holder.url);
+    const before = process.getActiveResourcesInfo().filter((name) => name === 'TCPServerWrap').length;
+    await expect(start({ port: Number(port) })).rejects.toThrow(/EADDRINUSE/);
+    const deadline = Date.now() + 1000;
+    let after = process.getActiveResourcesInfo().filter((name) => name === 'TCPServerWrap').length;
+    while (after > before && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      after = process.getActiveResourcesInfo().filter((name) => name === 'TCPServerWrap').length;
+    }
+    expect(after).toBeLessThanOrEqual(before);
+  });
+
   test('loads a scenario from a file and records its path', async () => {
     const path = join(dir, 'scenario.json');
     writeFileSync(path, JSON.stringify(scenario));
@@ -294,6 +308,102 @@ describe('error matrix', () => {
       [4, 'scripted'],
     ]);
   });
+});
+
+function chatCompletion(text: string, extra: Record<string, unknown> = {}): string {
+  return JSON.stringify({ model: 'gpt-4o', messages: [{ role: 'user', content: text }], ...extra });
+}
+
+describe('openai routing', () => {
+  test('serves a non-streaming request as JSON and a streaming one as SSE, both from the same scenario cursor', async () => {
+    const server = await start();
+    const nonStreaming = await send(server.url, { path: '/v1/chat/completions', body: chatCompletion('one') });
+    expect(nonStreaming.status).toBe(200);
+    expect(nonStreaming.headers['content-type']).toBe('application/json');
+    const body = JSON.parse(nonStreaming.body) as { object: string; choices: [{ message: { content: string } }] };
+    expect(body.object).toBe('chat.completion');
+    expect(body.choices[0]!.message.content).toBe('first');
+
+    const streaming = await send(server.url, { path: '/v1/chat/completions', body: chatCompletion('two', { stream: true }) });
+    expect(streaming.status).toBe(200);
+    expect(streaming.headers['content-type']).toBe('text/event-stream; charset=utf-8');
+    expect(streaming.body.endsWith('data: [DONE]\n\n')).toBe(true);
+    expect(streaming.body).toContain('"content":"second"');
+
+    const { summary } = await open.pop()!.close();
+    expect(summary).toEqual({ scripted: 3, served: 2, repeated: 0, asides: 0, unmatched: 0, ambiguous: 0, invalid: 0, complete: true });
+  });
+
+  test('the per-request line carries surface openai and the normalised view', async () => {
+    const server = await start();
+    await send(server.url, { path: '/v1/chat/completions', body: chatCompletion('help me refactor', { max_tokens: 512 }) });
+    await open.pop()!.close();
+    const [line] = readRecording(server.recordPath).requests;
+    expect(line).toMatchObject({ surface: 'openai', path: '/v1/chat/completions', status: 200, served: { kind: 'scripted', index: 0 } });
+    expect(line!.normalized).toMatchObject({
+      model: 'gpt-4o',
+      stream: false,
+      maxTokens: 512,
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'help me refactor' }] }],
+    });
+  });
+
+  test('when.system and when.tools.absent match on the OpenAI shape', async () => {
+    const server = await start();
+    const res = await send(server.url, {
+      path: '/v1/chat/completions',
+      body: JSON.stringify({
+        model: 'gpt-4o',
+        messages: [
+          { role: 'system', content: 'Generate a short, descriptive title for this conversation' },
+          { role: 'user', content: 'x' },
+        ],
+      }),
+    });
+    expect(JSON.parse(res.body).choices[0].message.content).toBe('Untitled');
+
+    const byToolsAbsent = await send(server.url, {
+      path: '/v1/chat/completions',
+      body: JSON.stringify({ model: 'claude-3-5-haiku', messages: [{ role: 'user', content: 'bg' }] }),
+    });
+    expect(JSON.parse(byToolsAbsent.body).choices[0].message.content).toBe('aside two');
+
+    const { summary } = await open.pop()!.close();
+    expect(summary.asides).toBe(2);
+    expect(summary.served).toBe(0);
+  });
+
+  test('error matrix: 404, 405, 400, 413 are recorded; there is no 422 on this surface', async () => {
+    const server = await start();
+    const notFound = await send(server.url, { path: '/v1/complete', body: chatCompletion('x') });
+    expect(notFound.status).toBe(404);
+
+    const methodNotAllowed = await send(server.url, { path: '/v1/chat/completions', method: 'GET' });
+    expect(methodNotAllowed.status).toBe(405);
+
+    const badJson = await send(server.url, { path: '/v1/chat/completions', body: '{not json' });
+    expect(badJson.status).toBe(400);
+    expect(JSON.parse(badJson.body).error.type).toBe('invalid_json');
+
+    const missingModel = await send(server.url, {
+      path: '/v1/chat/completions',
+      body: JSON.stringify({ messages: [{ role: 'user', content: 'x' }] }),
+    });
+    expect(missingModel.status).toBe(400);
+    expect(JSON.parse(missingModel.body).error.type).toBe('invalid_request');
+
+    // stream:false is a normal, valid request on this surface (unlike Anthropic): never a 422.
+    const streamFalse = await send(server.url, { path: '/v1/chat/completions', body: chatCompletion('x', { stream: false }) });
+    expect(streamFalse.status).toBe(200);
+
+    const tooLarge = await send(server.url, { path: '/v1/chat/completions', body: 'x'.repeat(MAX_BODY_BYTES + 1) });
+    expect(tooLarge.status).toBe(413);
+
+    await open.pop()!.close();
+    const statuses = readRecording(server.recordPath).requests.map((line) => line.status);
+    expect(statuses).not.toContain(422);
+    expect(statuses).toEqual([404, 405, 400, 400, 200, 413]);
+  }, 60000);
 });
 
 describe('recorded lines', () => {
