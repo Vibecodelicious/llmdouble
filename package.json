@@ -21,11 +21,12 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json",
+    "fixtures": "tsc -p tsconfig.json && node dist/fixtures/prune.js"
   },
   "devDependencies": {
     "@types/node": "^22.20.2",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.7"
   }
 }
