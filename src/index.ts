@@ -1,5 +1,4 @@
-// Public API of llmdouble. Story 2 adds `load`, `Recording`, `BlockedError`,
-// and the matchers; story 3 adds `run` and `differential`.
+// Public API of llmdouble. Story 3 adds `run` and `differential`.
 
 export { startServer, MAX_BODY_BYTES, SERVER_ERRORS } from './core/server.js';
 export type { StartServerOptions, ServerHandle, Surface, ParseResult, RenderContext, Rendered, ErrorSpec } from './core/server.js';
@@ -30,3 +29,12 @@ export type {
   ServedKind,
   SurfaceName,
 } from './core/recording.js';
+export { load } from './assert/load.js';
+export { matchers } from './assert/matchers.js';
+export { BlockedError } from './assert/verdict.js';
+export type { Verdict, VerdictStatus } from './assert/verdict.js';
+export type { Recording, RecordingSummary } from './assert/recording.js';
+export type { Request, ContentClaims } from './assert/request.js';
+export type { Region } from './assert/region.js';
+export type { Divergence, DivergentRequest, OnlyInSelector } from './assert/divergence.js';
+export type { MatcherResult, MatcherContext } from './assert/matchers.js';
