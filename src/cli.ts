@@ -98,6 +98,8 @@ export function defaultRecordPath(now = new Date()): string {
 export interface ServeHandle {
   url: string;
   recordPath: string;
+  /** Rejects with the server's handler failure, if one happens; `serve` exits 1 on it rather than serving nothing. */
+  failed: Promise<never>;
   /** Close the server, print the run summary, and return the recording. */
   stop(): Promise<Recording>;
 }
@@ -105,6 +107,11 @@ export interface ServeHandle {
 /** Start `serve`: print the listening line, then one block per request until `stop()`. */
 export async function startServe(options: ServeOptions, io: CliIo): Promise<ServeHandle> {
   let previousBytes: number | null = null;
+  let fail: (error: Error) => void = () => undefined;
+  const failed = new Promise<never>((_, reject) => {
+    fail = reject;
+  });
+  failed.catch(() => undefined); // observed through the handle; nothing to report here if the caller never races it
   const server = await startServer({
     scenario: options.scenario,
     port: options.port,
@@ -113,11 +120,13 @@ export async function startServe(options: ServeOptions, io: CliIo): Promise<Serv
       io.stdout(formatRequestBlock(line, previousBytes, options.raw));
       previousBytes = byteLength(line.body);
     },
+    onError: (error) => fail(new Error(`server failed: ${error.message}; recording ${server.recordPath} has no summary`)),
   });
   io.stdout(`listening on ${server.url}\nrecording to ${server.recordPath}\n`);
   return {
     url: server.url,
     recordPath: server.recordPath,
+    failed,
     stop: async () => {
       const recording = await server.close();
       io.stdout(`${RULE}\n${formatSummary(recording.summary)}\nrecording: ${server.recordPath}\n`);
@@ -204,7 +213,7 @@ export async function main(argv: string[], io: CliIo, untilStop: () => Promise<v
     io.stderr(`${error instanceof ScenarioError ? error.message : (error as Error).message}\n`);
     return 1;
   }
-  await untilStop();
+  await Promise.race([untilStop(), handle.failed]);
   await handle.stop();
   return 0;
 }

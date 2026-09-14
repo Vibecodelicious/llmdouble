@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -251,5 +251,23 @@ describe('main', () => {
     expect(await running).toBe(0);
     expect(out.out).toContain('2 scripted, 1 served, 0 repeated');
     expect(readRecording(record).summary?.served).toBe(1);
+  });
+
+  test('main rejects promptly when the server fails, without waiting for a stop signal', async () => {
+    const out = io();
+    const gone = join(dir, 'gone');
+    const running = main(['serve', '--scenario', scenarioPath, '--record', join(gone, 'main.jsonl')], out, () => new Promise(() => undefined));
+    await new Promise<void>((resolve) => {
+      const poll = (): void => {
+        if (out.out.includes('listening on ')) resolve();
+        else setTimeout(poll, 5);
+      };
+      poll();
+    });
+    const url = /listening on (\S+)/.exec(out.out)![1]!;
+    const outcome = expect(running).rejects.toThrow(/server failed: .*ENOENT.*has no summary/);
+    rmSync(gone, { recursive: true, force: true });
+    await post(url, JSON.stringify({ model: 'm', stream: true, messages: [{ role: 'user', content: 'x' }] })).catch(() => undefined);
+    await outcome;
   });
 });

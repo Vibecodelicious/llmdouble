@@ -1,4 +1,4 @@
-import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, test } from 'vitest';
@@ -94,6 +94,15 @@ describe('RecordingWriter', () => {
     const path = join(dir, 'nested', 'deeper', 'inline.jsonl');
     openRecording({ path, url: 'http://127.0.0.1:1', scenario: null, scripted: 1 }).close();
     expect(readRecording(path).run.scenario).toBeNull();
+  });
+
+  test('a request line the append cannot write is not counted', () => {
+    const gone = join(dir, 'gone');
+    const path = join(gone, 'lost.jsonl');
+    const writer = openRecording({ path, url: 'http://127.0.0.1:1', scenario: null, scripted: 1 });
+    rmSync(gone, { recursive: true, force: true });
+    expect(() => writer.request(requestLine(1, 'scripted', 0))).toThrow('ENOENT');
+    expect(writer.summary).toEqual({ scripted: 1, served: 0, repeated: 0, asides: 0, unmatched: 0, ambiguous: 0, invalid: 0 });
   });
 
   test('opening truncates a previous recording at the same path', () => {

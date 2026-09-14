@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, request as httpRequest, type IncomingHttpHeaders } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -341,5 +341,52 @@ describe('recorded lines', () => {
     });
     expect(line!.normalized!.messages).toHaveLength((JSON.parse(body) as { messages: unknown[] }).messages.length);
     expect(parseSse(line!.responseBody).map((e) => e.event)).toContain('message_stop');
+  });
+});
+
+describe('handler failures', () => {
+  function listeners(): number {
+    return process.getActiveResourcesInfo().filter((name) => name === 'TCPServerWrap').length;
+  }
+
+  test('a throwing onRequest fails the server: onError, a reset client, refused requests, close() throws, no summary', async () => {
+    const errors: Error[] = [];
+    const server = await start({
+      onRequest: (line) => {
+        if (line.seq === 2) throw new Error('boom');
+      },
+      onError: (error) => errors.push(error),
+    });
+    expect((await send(server.url, { body: messages('one') })).status).toBe(200);
+    await expect(send(server.url, { body: messages('two') })).rejects.toThrow(/ECONNRESET|socket hang up/);
+    expect(errors.map((e) => e.message)).toEqual(['boom']);
+    await expect(send(server.url, { body: messages('three') })).rejects.toThrow(/ECONNRESET|socket hang up/);
+    expect(errors).toHaveLength(1);
+    await expect(open.pop()!.close()).rejects.toThrow('boom');
+    const file = readRecording(server.recordPath);
+    expect(file.requests.map((line) => line.seq)).toEqual([1, 2]);
+    expect(file.summary).toBeNull();
+  });
+
+  test('a recording that cannot be appended fails the server and close() throws', async () => {
+    const gone = join(dir, `gone-${++counter}`);
+    const errors: Error[] = [];
+    const server = await start({ record: join(gone, 'run.jsonl'), onError: (error) => errors.push(error) });
+    rmSync(gone, { recursive: true, force: true });
+    await expect(send(server.url, { body: messages('one') })).rejects.toThrow(/ECONNRESET|socket hang up/);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain('ENOENT');
+    await expect(open.pop()!.close()).rejects.toThrow('ENOENT');
+  });
+
+  test('a recording that cannot be opened rejects startServer without leaving a listener behind', async () => {
+    const before = listeners();
+    const file = join(dir, `not-a-dir-${++counter}`);
+    writeFileSync(file, '');
+    await expect(startServer({ scenario, record: join(file, 'run.jsonl') })).rejects.toThrow(/ENOTDIR|EEXIST/);
+    // A closed listener leaves the active-resources list a loop turn or two after its close callback; a leaked one never does.
+    const deadline = Date.now() + 1000;
+    while (listeners() > before && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(listeners()).toBeLessThanOrEqual(before);
   });
 });

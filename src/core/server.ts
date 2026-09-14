@@ -5,6 +5,14 @@
 // Every request that is fully received gets a `seq` in strict receipt order;
 // the decision and the recording happen in one synchronous step, so
 // concurrent clients cannot interleave the cursor or the ids.
+//
+// A failure inside that step (the recording cannot be appended, a surface's
+// render throws, the caller's `onRequest` throws) is the server's failure:
+// the client's socket is destroyed, `onError` is told, every later request
+// is refused, and `close()` throws the failure instead of writing a summary.
+// A recording from a failed run therefore never closes cleanly, and `run`
+// (epic C5) can throw as soon as the failure happens rather than at its
+// timeout.
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -72,12 +80,20 @@ export interface StartServerOptions {
   record?: string;
   /** Called with each request line as it is recorded. */
   onRequest?: (line: RequestLine) => void;
+  /**
+   * Called once, with the first handler failure. After it the server answers nothing and `close()` throws the
+   * same error without writing a summary line.
+   */
+  onError?: (error: Error) => void;
 }
 
 export interface ServerHandle {
   url: string;
   recordPath: string;
-  /** Stop listening, write the summary line, and return the recording, loaded back from the file (epic C5). */
+  /**
+   * Stop listening, write the summary line, and return the recording, loaded back from the file (epic C5).
+   * After a handler failure it stops listening and throws that failure; the file then has no summary line.
+   */
   close(): Promise<Recording>;
 }
 
@@ -87,7 +103,7 @@ export async function startServer(options: StartServerOptions): Promise<ServerHa
   }
   const scenarioPath = typeof options.scenario === 'string' ? options.scenario : null;
   const scenario = scenarioPath === null ? validateScenario(options.scenario) : loadScenario(scenarioPath);
-  const engine = new Engine(scenario, options.onRequest);
+  const engine = new Engine(scenario, options.onRequest, options.onError);
   const server = createServer((req, res) => {
     void engine.handle(req, res);
   });
@@ -105,7 +121,12 @@ export async function startServer(options: StartServerOptions): Promise<ServerHa
   }
   const url = `http://127.0.0.1:${address.port}`;
   const recordPath = options.record ?? defaultRecordPath();
-  engine.open({ path: recordPath, url, scenario: scenarioPath, scripted: scenario.responses.length });
+  try {
+    engine.open({ path: recordPath, url, scenario: scenarioPath, scripted: scenario.responses.length });
+  } catch (error) {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    throw error;
+  }
   return {
     url,
     recordPath,
@@ -113,9 +134,11 @@ export async function startServer(options: StartServerOptions): Promise<ServerHa
   };
 }
 
+let started = 0;
+
 function defaultRecordPath(): string {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  return join(tmpdir(), `llmdouble-${stamp}-${process.pid}.jsonl`);
+  return join(tmpdir(), `llmdouble-${stamp}-${process.pid}-${++started}.jsonl`);
 }
 
 async function closeServer(server: Server, engine: Engine, recordPath: string): Promise<Recording> {
@@ -135,18 +158,22 @@ class Engine {
   private cursor = 0;
   private seq = 0;
   private recording: ReturnType<typeof openRecording> | null = null;
+  private failure: Error | null = null;
 
   constructor(
     private readonly scenario: Scenario,
     private readonly onRequest: ((line: RequestLine) => void) | undefined,
+    private readonly onError: ((error: Error) => void) | undefined,
   ) {}
 
   open(options: Parameters<typeof openRecording>[0]): void {
     this.recording = openRecording(options);
   }
 
+  /** Write the summary line and return the counts, or throw the handler failure that ended the run. */
   close(): RunSummary {
     if (this.recording === null) throw new Error('recording was never opened');
+    if (this.failure !== null) throw this.failure;
     return this.recording.close();
   }
 
@@ -157,7 +184,21 @@ class Engine {
     } catch {
       return; // the client went away mid-upload; there is nothing to answer or record
     }
-    // Everything below is synchronous: one request's decision, recording, and reply cannot interleave with another's.
+    if (this.failure !== null) {
+      res.destroy(); // a failed server answers nothing: a request served after the failure could not be recorded
+      return;
+    }
+    try {
+      this.serve(req, res, received);
+    } catch (error) {
+      this.failure = error instanceof Error ? error : new Error(String(error));
+      res.destroy();
+      this.onError?.(this.failure);
+    }
+  }
+
+  /** One request's decision, recording, and reply, synchronous so it cannot interleave with another's. */
+  private serve(req: IncomingMessage, res: ServerResponse, received: ReceivedBody): void {
     const seq = ++this.seq;
     const at = new Date().toISOString();
     const method = req.method ?? 'GET';

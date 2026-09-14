@@ -127,10 +127,11 @@ export class RecordingWriter {
     writeFileSync(this.path, `${JSON.stringify(this.run)}\n`);
   }
 
-  /** Append one request line and tally its served kind. */
+  /** Append one request line, then tally its served kind: a line the append could not write is never counted. */
   request(line: Omit<RequestLine, 'type'>): RequestLine {
     if (this.closed) throw new Error(`recording ${this.path} is closed`);
     const full: RequestLine = { type: 'request', ...line };
+    appendFileSync(this.path, `${JSON.stringify(full)}\n`);
     switch (full.served.kind) {
       case 'scripted':
         this.counts.served += 1;
@@ -152,7 +153,6 @@ export class RecordingWriter {
         this.counts.invalid += 1;
         break;
     }
-    appendFileSync(this.path, `${JSON.stringify(full)}\n`);
     return full;
   }
 
