@@ -20,6 +20,7 @@ import { join } from 'node:path';
 import { load } from '../assert/load.js';
 import type { Recording } from '../assert/recording.js';
 import { anthropicSurface } from '../surfaces/anthropic.js';
+import { openaiSurface } from '../surfaces/openai.js';
 import { IdCounters } from './ids.js';
 import { matchesWhen } from './matcher.js';
 import type { NormalizedRequest } from './normalize.js';
@@ -39,6 +40,12 @@ export type ParseResult = { ok: true; normalized: NormalizedRequest } | { ok: fa
 export interface RenderContext {
   normalized: NormalizedRequest;
   ids: IdCounters;
+  /**
+   * The parsed request body, for a wire-only field a surface's render needs that normalization does not
+   * carry (for example OpenAI's `stream_options.include_usage`). Optional so existing single-surface
+   * call sites need not supply it; the server always does.
+   */
+  raw?: Record<string, unknown>;
 }
 
 export interface Rendered {
@@ -57,7 +64,7 @@ export interface Surface {
   render(response: ScriptedResponse, ctx: RenderContext): Rendered;
 }
 
-const SURFACES: readonly Surface[] = [anthropicSurface];
+const SURFACES: readonly Surface[] = [anthropicSurface, openaiSurface];
 
 const KNOWN_ROUTES = SURFACES.map((surface) => `POST ${surface.path}`).join(', ');
 
@@ -236,7 +243,7 @@ class Engine {
     const parsed = surface.parse(body);
     if (!parsed.ok) return errorOutcome(parsed.error, 'invalid');
     const { normalized } = parsed;
-    const ctx: RenderContext = { normalized, ids: this.ids };
+    const ctx: RenderContext = { normalized, ids: this.ids, raw: body };
 
     const asides = this.scenario.aside ?? [];
     const matching = asides.map((aside, index) => ({ aside, index })).filter(({ aside }) => matchesWhen(aside.when, normalized));
