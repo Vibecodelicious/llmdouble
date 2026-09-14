@@ -78,9 +78,6 @@ export async function run(scenario: string | Scenario, options: RunOptions): Pro
   });
   const deadline = Date.now() + timeoutMs;
   const logs = logPaths(server.recordPath);
-  // Written fresh by each run, like the recording; setup and exec then append to them in order.
-  writeFileSync(logs.stdout, '');
-  writeFileSync(logs.stderr, '');
   const shell: ShellOptions = {
     cwd: options.cwd,
     env: { ...process.env, ...substituteEnv(options.env ?? {}, server.url) },
@@ -91,6 +88,9 @@ export async function run(scenario: string | Scenario, options: RunOptions): Pro
   let exitCode: number | null = null;
   let error: unknown = null;
   try {
+    // Written fresh by each run, like the recording; setup and exec then append to them in order.
+    writeFileSync(logs.stdout, '');
+    writeFileSync(logs.stderr, '');
     if (options.setup !== undefined) {
       const setup = await runShell(substituteUrl(options.setup, server.url), shell);
       if (setup.timedOut) throw new TimedOut();

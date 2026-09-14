@@ -150,6 +150,14 @@ describe('run with a string exec', () => {
     expect(existsSync(join(cwd, 'ran'))).toBe(false);
   });
 
+  test('a log file that cannot be truncated fails the run before exec and still closes the server', async () => {
+    const { cwd, record } = fresh();
+    mkdirSync(join(cwd, 'run.stdout.log'));
+    await expect(run(scenario, { exec: 'touch ran', cwd, record })).rejects.toThrow(/EISDIR/);
+    expect(existsSync(join(cwd, 'ran'))).toBe(false);
+    expect(load(record).summary.complete).toBe(true);
+  });
+
   test('a server failure mid-run aborts the run promptly, kills the command, and throws with the recording path', async () => {
     const { cwd } = fresh();
     const recordDir = join(cwd, 'rec');

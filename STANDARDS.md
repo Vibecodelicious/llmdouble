@@ -63,7 +63,7 @@
   - `fixtures/` — server-written recordings, checked in (see Testing).
 - `src/fixtures/` — the fixture generators and the writer/reader agreement test; they drive the server, which is why they are not under `src/assert/`.
 - `src/run/` — process orchestration around the server; imports core and assert:
-  - `run.ts` — `run`: `$URL` substitution, `sh -c` in a detached process group, setup then exec, one deadline for both, the group killed on timeout (SIGTERM, then SIGKILL) and swept after exit, stdout and stderr appended to files next to the recording, a server failure aborting the run at once.
+  - `run.ts` — `run`: `$URL` substitution, `sh -c` in a detached process group, setup then exec, one deadline for both, the group killed on timeout (SIGTERM, then SIGKILL) and swept after exit, stdout and stderr written fresh per run to files next to the recording (setup then exec appending), a server failure aborting the run at once.
   - `differential.ts` — `differential`: the arm merge (`env` merged, `exec`/`setup`/`scenario` replaced, `cwd`/`timeoutMs` shared) and two sequential `run`s.
   - `example.test.ts` — the design §5.0 and §5.7 test against the example client, and its negative control.
 - `examples/scenarios/` — scenario files the README refers to.
