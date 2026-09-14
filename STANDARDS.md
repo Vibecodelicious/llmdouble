@@ -16,7 +16,7 @@
 ## Dependencies
 
 - Runtime dependencies: none. A change that adds one needs a justification in the commit body and an update to this document.
-- Dev dependencies: `typescript`, `vitest`, and `@types/node` only.
+- Dev dependencies: `typescript`, `vitest`, `@types/node`, and, for the OpenAI surface's client-verification test only, `@ai-sdk/openai-compatible` and `ai` (pinned exactly to the versions `opencode/packages/opencode/package.json` pins, so the client under test matches a real consumer's dependency graph). Nothing else.
 - `package-lock.json` is committed; CI installs with `npm ci`. Version ranges in `package.json` are kept in step with what the lock resolves.
 
 ## Linting / formatting
@@ -28,7 +28,7 @@
 ## Testing
 
 - `vitest` (`npm test` runs `vitest run`); tests are colocated `*.test.ts` files under `src/`, selected by `vitest.config.ts`.
-- Server behaviour is tested over a real `127.0.0.1` socket with `node:http` requests, reading the SSE body and asserting exact event order. Nothing mocks the network.
+- Server behaviour is tested over a real `127.0.0.1` socket with `node:http` requests, reading the SSE body (both surfaces' event/chunk order) or the JSON body (the OpenAI surface's non-streaming path) and asserting exact structure. Nothing mocks the network.
 - Scenario validation, `when` matching, normalisation, recording, and SSE rendering have unit tests with table cases over every field, operator, and error row.
 - `src/assert/boundary.test.ts` scans every file under `src/assert/` and fails if an import resolves into `src/core/server`, `src/surfaces`, or `src/run`.
 - The assertion library's unit tests build recordings in memory with `src/assert/testing.ts`, whose raw body and normalised view are hand-written on purpose (the reader must not depend on the surface). Writer and reader are proven to agree in `src/fixtures/prune.test.ts`, which records the prune conversation with the real server and compares it to the checked-in fixture.
@@ -50,7 +50,7 @@
   - `ids.ts` — monotonic id counters.
   - `sse.ts` — server-sent events formatting and parsing.
   - `server.ts` — `startServer`, routing, the body limit, asides, the cursor, the error matrix, recording, and the failure rule: a failure while serving destroys the client's socket, reaches `onError` once, refuses every later request, and makes `close()` throw instead of writing a summary line.
-- `src/surfaces/` — one module per provider wire format, each exporting a `Surface` (`parse` + `render`). The server owns everything that is not wire-format specific.
+- `src/surfaces/` — one module per provider wire format, each exporting a `Surface` (`parse` + `render`): `anthropic.ts` (Messages, streaming only) and `openai.ts` (chat-completions, streaming and non-streaming). The server owns everything that is not wire-format specific; `cross-surface.test.ts` proves the two surfaces normalise one scenario identically, and `openai-client.test.ts` drives the running server with a real `@ai-sdk/openai-compatible` client rather than a hand-written stream reader.
 - `src/assert/` — the assertion library. Reads recordings; imports nothing from `core/server`, `surfaces`, or `run`:
   - `verdict.ts` — `Verdict`, `BlockedError`, and the empty-search-text rule.
   - `load.ts` — `load(path)`.
@@ -79,7 +79,7 @@ A string `exec` is spawned as `sh -c` with `detached: true`, so the command and 
 
 ## Adding a surface
 
-A surface is a `Surface` object registered in `src/core/server.ts`: a `name` (the `surface` value recorded on every request line), a `path`, `parse(body)` producing a `NormalizedRequest` or an error spec, and `render(response, ctx)` producing status, headers, and body. Ids come from `ctx.ids.next(prefix)` with a surface-native prefix. The server handles routing, method checks, the 8 MiB limit, JSON parsing, asides, the cursor, and recording; a surface never records or touches the cursor.
+A surface is a `Surface` object registered in `src/core/server.ts`: a `name` (the `surface` value recorded on every request line), a `path`, `parse(body)` producing a `NormalizedRequest` or an error spec, and `render(response, ctx)` producing status, headers, and body. Ids come from `ctx.ids.next(prefix)` with a surface-native prefix. `ctx.raw` is the parsed request body, for a wire-only field `render` needs that `NormalizedRequest` does not carry because it is specific to one surface (the OpenAI surface's `stream_options.include_usage` is the example); it is optional so a call site built before a second surface existed need not supply it. The server handles routing, method checks, the 8 MiB limit, JSON parsing, asides, the cursor, and recording; a surface never records or touches the cursor.
 
 ## Out of scope
 

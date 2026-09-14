@@ -9,7 +9,7 @@ Two faces, one engine:
 - **Development tool.** Run `llmdouble serve`, point your agent at it, and watch what it actually sends, request by request, with byte deltas.
 - **Test infrastructure.** The same recording, read back by a test through the assertion library: content presence and absence, structure, scoped byte measurement of a region, cross-request claims, and a differential between two recordings. The recording format below is the contract between the two faces.
 
-This slice is the Anthropic Messages surface, streaming only, plus the assertion library, `llmdouble diff`, and `run`/`differential`, which execute a system under test against a live server and hand back its recording. The OpenAI chat-completions surface follows.
+Two surfaces: Anthropic Messages (`POST /v1/messages`, streaming only) and OpenAI chat-completions (`POST /v1/chat/completions`, streaming and non-streaming), reusing the same scenario engine, ids, and recording format, plus the assertion library, `llmdouble diff`, and `run`/`differential`, which execute a system under test against a live server and hand back its recording.
 
 ## Install
 
@@ -26,7 +26,7 @@ npm run build
 
 ## Point a client at it
 
-Every client reaches the server the way it already reaches a provider: a base URL and a placeholder key, set through the client's own configuration or environment. The server binds `127.0.0.1` only, checks no credentials, and serves `POST /v1/messages`.
+Every client reaches the server the way it already reaches a provider: a base URL and a placeholder key, set through the client's own configuration or environment. The server binds `127.0.0.1` only, checks no credentials, and serves `POST /v1/messages` and `POST /v1/chat/completions`.
 
 For an Anthropic-speaking client the move is generically:
 
@@ -34,7 +34,22 @@ For an Anthropic-speaking client the move is generically:
 ANTHROPIC_BASE_URL=http://127.0.0.1:<port> ANTHROPIC_API_KEY=x <your client>
 ```
 
-The key value is irrelevant; it is recorded as `[redacted]`. Nothing client-specific ships here: which variable or config field a given client reads is that client's documentation.
+For an OpenAI-compatible client, generically an environment variable or two:
+
+```sh
+OPENAI_BASE_URL=http://127.0.0.1:<port>/v1 OPENAI_API_KEY=x <your client>
+```
+
+or, for a client wired by config file rather than environment, a `provider`/`base_url` pair naming the two things every OpenAI-compatible client needs — a custom provider and a base URL ending in `/v1` (the client appends `/chat/completions` itself):
+
+```yaml
+model:
+  provider: custom
+  base_url: "http://127.0.0.1:<port>/v1"
+  api_key: "placeholder-key"
+```
+
+The exact field names are that client's own documentation; the shape above is generic, not a recipe for any one harness (no per-client configuration ships here, per `STANDARDS.md`). The key value is irrelevant either way; it is recorded as `[redacted]`.
 
 ## `llmdouble serve`
 
@@ -54,17 +69,20 @@ The server prints one block per request and a summary when stopped with Ctrl-C:
 listening on http://127.0.0.1:43493
 recording to ./llmdouble-2026-09-14T05-10-16-321Z.jsonl
 ────────────────────────────────────────────────────────────
-req 1  HEAD /api/hello  404  unmatched  22:10:16
+req 1  HEAD /api/hello  -  404  unmatched  22:10:16
   messages -   tools -   total 0 B
 ────────────────────────────────────────────────────────────
-req 2  POST /v1/messages  200  scripted[0]  22:10:16
+req 2  POST /v1/messages  anthropic  200  scripted[0]  22:10:16
   messages 1   tools 0   total 915 B   (+915)
 ────────────────────────────────────────────────────────────
-3 scripted, 1 served, 0 repeated, 0 asides, 1 unmatched, 0 ambiguous, 0 invalid
+req 3  POST /v1/chat/completions  openai  200  scripted[1]  22:10:17
+  messages 1   tools 0   total 402 B   (-513)
+────────────────────────────────────────────────────────────
+4 scripted, 2 served, 0 repeated, 0 asides, 1 unmatched, 0 ambiguous, 0 invalid
 recording: ./llmdouble-2026-09-14T05-10-16-321Z.jsonl
 ```
 
-Each block shows the sequence number, method and path, HTTP status, what was served (`scripted[i]`, `repeated[i]`, `aside[i] <name>`, or a rejection kind), the message and tool counts from the normalised request, the request body's UTF-8 size, and the delta from the previous request. Sizes are bytes, not tokens; no tokenizer is involved.
+Each block shows the sequence number, method and path, which surface served it (`anthropic`, `openai`, or `-` for a route no surface owns), HTTP status, what was served (`scripted[i]`, `repeated[i]`, `aside[i] <name>`, or a rejection kind), the message and tool counts from the normalised request, the request body's UTF-8 size, and the delta from the previous request. Sizes are bytes, not tokens; no tokenizer is involved.
 
 If the server itself fails while serving (the recording file can no longer be written, for instance), it answers nothing from then on, `serve` exits 1 with the message, and the recording has no summary line: a run that did not close cleanly, never a run that looks complete.
 
@@ -119,7 +137,7 @@ Rules:
 
 - `responses` is required and non-empty. Each response has a required `say` (may be `""`), optional `calls` (each `{ "tool": "<name>", "with": { ... } }`; `with` defaults to `{}`), and optional `usage` (`{ "input": n, "output": n }`, each side defaulting to 0). These are the input and output token counts the provider *reports*; they are scripted because clients drive budget behaviour from them.
 - The cursor advances once per main-sequence request. After the last response, **the last response repeats**, and each such request is recorded as `repeated`. A run that takes an unexpected extra turn terminates instead of erroring.
-- The stop reason is derived: `calls` present gives `tool_use`, otherwise `end_turn`. Ids are deterministic and monotonic across the run: `msg_1`, `msg_2`, ... and `toolu_1`, `toolu_2`, ....
+- The stop reason is derived: `calls` present gives `tool_use` (Anthropic) / `tool_calls` (OpenAI), otherwise `end_turn` / `stop`. Ids are deterministic and monotonic across the run, one counter per prefix shared by both surfaces: Anthropic gets `msg_1`, `msg_2`, ... and `toolu_1`, `toolu_2`, ...; OpenAI gets `chatcmpl-1`, `chatcmpl-2`, ... and `call_1`, `call_2`, ....
 - `aside` entries answer out-of-band requests (background title generation, summarisation) without advancing the cursor. Every request is checked against every aside first. Exactly one match is served and recorded as `aside` with the aside's `name`; more than one match is an HTTP 500 `ambiguous_match`, recorded as `ambiguous`; no match falls through to the main sequence. Each aside needs a unique `name`, a non-empty `when`, and the same `say`/`calls`/`usage` as a response.
 - `when` fields are all optional and ANDed. They are exactly the wire-visible differences that separate auxiliary traffic from the main conversation:
   - `model`, `system`: a string matcher, one of `{ "equals" }`, `{ "contains" }`, `{ "startsWith" }`, `{ "endsWith" }`. `system` matches over the normalised system text (all system blocks, newline-joined).
@@ -148,6 +166,29 @@ Everything else is a recorded JSON error of the form `{"type":"error","error":{"
 
 Never a silent 200: a client probing an unexpected route shows up in the recording.
 
+## The OpenAI surface
+
+`POST /v1/chat/completions` serves both `"stream": false` and `"stream": true`, chosen by the request; unlike the Anthropic surface, there is no 422 here — this is the surface that must serve non-streaming clients.
+
+A non-streaming request gets a `chat.completion` object: `id` (`chatcmpl-<n>`), `object`, `created`, `model` (echoed), `choices[0].message` with `content` and, when the scripted response has `calls`, `tool_calls[{ id, type: "function", function: { name, arguments } }]` (`arguments` a JSON string of the call's `with`), `finish_reason` (`"stop"` or `"tool_calls"`), and `usage` (`prompt_tokens`, `completion_tokens`, `total_tokens` from the scripted usage).
+
+A streaming request gets `text/event-stream` as a sequence of `chat.completion.chunk` objects, one per `data:` line, ending in `data: [DONE]` (there is no `event:` line, unlike the Anthropic surface's named SSE events): a first chunk carrying `delta.role`, a content chunk when `say` is non-empty, then per scripted call a chunk carrying `delta.tool_calls[{ index, id, type: "function", function: { name, arguments: "" } }]` followed by one or more chunks carrying `delta.tool_calls[{ index, function: { arguments: "<fragment>" } }]` — the id and name appear once, on the first fragment, and the argument text arrives split across the rest, in order, for the client to accumulate by `index` — then a closing chunk with `finish_reason`, then, only when the request sets `stream_options: { include_usage: true }`, one more chunk with `choices: []` and the final `usage`, then `[DONE]`. `llmdouble diff` and `messagesMatching`/`footprintOf` all read the parsed request, not the response, so none of this touches the assertion vocabulary; it is verified directly against a real `@ai-sdk/openai-compatible` client in `src/surfaces/openai-client.test.ts`.
+
+Request parsing accepts `messages[].content` as a string or an array of parts (`text` parts kept, `image_url` and anything else unmodelled reduced to a text block holding the part's JSON), an assistant message's `tool_calls` become `tool_use` blocks (arguments parsed back from their JSON string), a `tool`-role message becomes a `tool_result` block keyed by `tool_call_id`, `tools[].function.name` becomes `tools[].name`, and `max_tokens` or `max_completion_tokens` (either, whichever is present) becomes `maxTokens`. `normalized.system` is a view over system-role messages; `normalized.messages` keeps the `system` and `tool` roles as sent, so index alignment with the raw body holds on this surface exactly as it does on Anthropic's.
+
+The error matrix is the same shape as Anthropic's, minus `stream_required`:
+
+| Request | Status | `error.type` | Recorded as |
+|---|---|---|---|
+| body is not a JSON object | 400 | `invalid_json` | `invalid` |
+| missing `model`/`messages`, malformed message | 400 | `invalid_request` | `invalid` |
+| body over 8 MiB | 413 | `request_too_large` | `invalid` |
+| any path other than `/v1/chat/completions` | 404 | `not_found` | `unmatched` |
+| any method other than `POST` on `/v1/chat/completions` | 405 | `method_not_allowed` | `unmatched` |
+| more than one aside matches | 500 | `ambiguous_match` | `ambiguous` |
+
+`src/surfaces/cross-surface.test.ts` drives one scenario through both surfaces and asserts the same `served` sequence, `tools.registered`, `messages.texts`, and mapped stop reasons (`end_turn`↔`stop`, `tool_use`↔`tool_calls`) come back either way.
+
 ## The recording
 
 A JSONL file: one `run` line, one `request` line per request in receipt order, one `summary` line on close.
@@ -169,7 +210,7 @@ A JSONL file: one `run` line, one `request` line per request in receipt order, o
 ```
 
 - `seq` is assigned in strict receipt order to every request that reaches the server, rejections included; there are no gaps.
-- `surface` is `"anthropic"` or `null` for a route no surface owns. `served.kind` is one of `scripted | aside | repeated | unmatched | ambiguous | invalid`. `served.index` is the 0-based position in `responses[]` (the last index, repeatedly, once the sequence is exhausted), the position in `aside[]` for an aside, and `null` otherwise. `served.aside` is the aside's name or `null`.
+- `surface` is `"anthropic"`, `"openai"`, or `null` for a route no surface owns. `served.kind` is one of `scripted | aside | repeated | unmatched | ambiguous | invalid`. `served.index` is the 0-based position in `responses[]` (the last index, repeatedly, once the sequence is exhausted), the position in `aside[]` for an aside, and `null` otherwise. `served.aside` is the aside's name or `null`.
 - `headers` keys are lowercased; the values of `authorization`, `x-api-key`, `cookie`, and `proxy-authorization` are `[redacted]`. `body` is the exact bytes as a string and is never redacted: it is the evidence. A 413 row carries an empty `body`; the oversized bytes are not retained.
 - `normalized` is `null` when the surface could not parse the body. Otherwise `messages` mirrors the wire `messages` array one-to-one and in order, with roles as sent. Content is reduced to three block kinds — `text`, `tool_use` (input kept as JSON), `tool_result` (`toolUseId` and the result text) — and everything else (images, thinking) becomes a `text` block holding the block's JSON. `system` is the top-level system blocks as `{ "text" }` entries. `cache_control` and every other field stay in the raw `body`.
 - `responseBody` is the exact response text: the SSE stream for a served response, the JSON error otherwise.
