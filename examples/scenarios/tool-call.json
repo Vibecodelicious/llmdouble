@@ -1,0 +1,10 @@
+{
+  "responses": [
+    {
+      "say": "I'll check the weather for you.",
+      "calls": [{ "tool": "get_weather", "with": { "city": "Springfield", "unit": "celsius" } }],
+      "usage": { "input": 24, "output": 12 }
+    },
+    { "say": "It's 21 degrees and clear in Springfield.", "usage": { "input": 40, "output": 10 } }
+  ]
+}
