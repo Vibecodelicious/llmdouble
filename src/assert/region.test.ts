@@ -113,6 +113,30 @@ describe('messagesBetween', () => {
     expect(rec2.messagesBetween({ from: 'step one', to: 'step four' }).indicesIn(rec2.first)).toEqual([0, 1]);
   });
 
+  test('a region belongs to the recording that created it and refuses a request from another recording', () => {
+    const a = recording([{ messages: [stepOne, stepFour] }, { messages: [placeholder] }]);
+    const b = recording([{ messages: [placeholder] }, { messages: [later] }]);
+    const fromA = a.messagesBetween({ from: 'step one', to: 'step four' });
+    expect(fromA.isAnchored).toBe(true);
+    expect(a.request(1).footprintOf(fromA)).toBeGreaterThan(0);
+    expect(() => b.last.footprintOf(fromA)).toThrow(BlockedError);
+    try {
+      b.last.footprintOf(fromA);
+    } catch (error) {
+      expect((error as BlockedError).verdict).toEqual({
+        status: 'BLOCKED',
+        claim: 'region messagesBetween({"from":"step one","to":"step four"}) was created on another recording; measure it with a region from the recording that owns request 2',
+        evidence: { region: 'messagesBetween({"from":"step one","to":"step four"})', seq: 2 },
+      });
+    }
+    // The same literal built on B is unanchored there: it throws rather than reporting a satisfied 0.
+    const fromB = b.messagesBetween({ from: 'step one', to: 'step four' });
+    expect(() => b.last.footprintOf(fromB)).toThrow(/matches nothing in any of the recording's 2 requests/);
+    // And a literal B does carry measures 0 where absent, as before.
+    expect(b.first.footprintOf(b.messagesMatching('now refactor'))).toBe(0);
+    expect(b.last.footprintOf(b.messagesMatching('now refactor'))).toBeGreaterThan(0);
+  });
+
   test('anchoring is decided over the whole recording, so a region present only in request 1 still measures 0 later', () => {
     const rec3 = recording([{ messages: [stepOne, stepFour] }, { messages: [placeholder] }, { messages: [placeholder] }]);
     const region = rec3.messagesBetween({ from: 'step one', to: 'step four' });

@@ -4,6 +4,11 @@
 // matches nothing measures 0. A region that matches nothing in any request of
 // its recording is unanchored, and measuring it throws `BlockedError`,
 // because a row of satisfied zeroes is indistinguishable from removed content.
+//
+// A region belongs to the recording that created it: anchoring is decided
+// over that recording, so measuring the region against another recording's
+// request would skip the check for the recording actually being measured.
+// That throws too; build one region per recording.
 
 import { BlockedError } from './verdict.js';
 import type { Recording } from './recording.js';
@@ -33,8 +38,14 @@ export class Region {
     return this.anchored;
   }
 
-  /** Throw `BlockedError` unless the region is anchored somewhere in its recording. */
-  requireAnchored(): void {
+  /** Throw `BlockedError` unless `request` belongs to this region's recording and the region is anchored somewhere in it. */
+  requireAnchored(request: Request): void {
+    if (!this.recording.requests.includes(request)) {
+      throw new BlockedError(
+        `region ${this.description} was created on another recording; measure it with a region from the recording that owns request ${request.seq}`,
+        { region: this.description, seq: request.seq },
+      );
+    }
     if (!this.isAnchored) {
       throw new BlockedError(`region ${this.description} matches nothing in any of the recording's ${this.recording.count} requests`, {
         region: this.description,

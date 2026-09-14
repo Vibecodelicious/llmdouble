@@ -171,7 +171,7 @@ A JSONL file: one `run` line, one `request` line per request in receipt order, o
 - `headers` keys are lowercased; the values of `authorization`, `x-api-key`, `cookie`, and `proxy-authorization` are `[redacted]`. `body` is the exact bytes as a string and is never redacted: it is the evidence. A 413 row carries an empty `body`; the oversized bytes are not retained.
 - `normalized` is `null` when the surface could not parse the body. Otherwise `messages` mirrors the wire `messages` array one-to-one and in order, with roles as sent. Content is reduced to three block kinds — `text`, `tool_use` (input kept as JSON), `tool_result` (`toolUseId` and the result text) — and everything else (images, thinking) becomes a `text` block holding the block's JSON. `system` is the top-level system blocks as `{ "text" }` entries. `cache_control` and every other field stay in the raw `body`.
 - `responseBody` is the exact response text: the SSE stream for a served response, the JSON error otherwise.
-- The summary counts: `scripted` is how many responses the scenario scripts; `served` is how many requests the main sequence answered (`scripted` plus `repeated` kinds); the rest count requests by kind. A file with no `summary` line is a run that did not close cleanly and is still readable.
+- The summary counts: `scripted` is how many responses the scenario scripts; `served` is how many requests the main sequence answered (`scripted` plus `repeated` kinds); the rest count requests by kind. A file with no `summary` line is a run that did not close cleanly and is still readable; `load` then computes every count from the request lines present, and `scripted` is the number of distinct scripted responses served (a lower bound, not the scenario's length). Check `summary.complete` before treating any count as the run's.
 
 Reading it back: `jq -c 'select(.type=="request") | {seq, path, status, served}' llmdouble-*.jsonl`, or `load` below.
 
@@ -218,7 +218,7 @@ declare module 'vitest' {
 | `rec.count`, `rec.requests` | every recorded request, rejections included |
 | `rec.first`, `rec.last`, `rec.request(n)` | by `seq` (1-based); `BlockedError` when absent |
 | `rec.servedBy(i)` | the one request served by scripted response `i`; asides and repeats never match; `BlockedError` when none or more than one |
-| `rec.summary` | the counts, plus `complete: false` when the file had no summary line (the run did not close cleanly) |
+| `rec.summary` | the counts, plus `complete: false` when the file had no summary line (the run did not close cleanly); every count is then computed from the request lines present and `scripted` is the distinct scripted responses served, a lower bound, so check `complete` before treating any count as the run's |
 | `req.contains(text)`, `req.doesNotContain(text)` | over `raw.body`, the exact bytes; a hit's `evidence.offset` is where |
 | `req.system.contains(text)`, `.doesNotContain(text)` | over the normalised system text |
 | `req.messages.count`, `.roles`, `.texts` | the normalised view; `texts` concatenates every block, tool inputs as JSON |
@@ -233,7 +233,7 @@ declare module 'vitest' {
 
 ### Regions and measurement
 
-A region is a content predicate re-evaluated against each request, never a resolved set of message indices. Content that moved to a different position still matches; a request where the predicate matches nothing measures 0. The predicate runs over the normalised message texts; the bytes come from the wire: `footprintOf` sums the UTF-8 length of `JSON.stringify` of the raw body's `messages[i]` at each selected index. A region that matches nothing in any request of the recording is unanchored, and measuring it throws `BlockedError`, because a row of satisfied zeroes is indistinguishable from removed content.
+A region is a content predicate re-evaluated against each request, never a resolved set of message indices. Content that moved to a different position still matches; a request where the predicate matches nothing measures 0. The predicate runs over the normalised message texts; the bytes come from the wire: `footprintOf` sums the UTF-8 length of `JSON.stringify` of the raw body's `messages[i]` at each selected index. A region that matches nothing in any request of the recording is unanchored, and measuring it throws `BlockedError`, because a row of satisfied zeroes is indistinguishable from removed content. A region belongs to the recording that created it, and measuring it against another recording's request throws `BlockedError` too, since the anchoring check would otherwise never have run over the recording being measured; build one region per recording (`on.messagesMatching(secret)` for `on`, `off.messagesMatching(secret)` for `off`).
 
 Measurement is per request and the comparison is yours: `expect(rec.last.footprintOf(region)).toBeLessThan(rec.request(1).footprintOf(region))`. Nothing packages a cross-request comparison as a verdict, because a region can legitimately shrink, grow, or move for reasons unrelated to the feature under test, and whole-payload deltas are not a sound claim at all: a system that injects and removes in the same request can grow the payload while pruning correctly. `totalBytes` is readable with the same restraint.
 

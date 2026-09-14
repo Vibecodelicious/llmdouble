@@ -104,11 +104,12 @@ export class Request {
   /**
    * The UTF-8 byte sum of `JSON.stringify(rawMessages[i])` over the indices the region matches here,
    * where `rawMessages` is the parsed raw body's `messages` array. Throws `BlockedError` when the region is
-   * unanchored (matches nothing in any request of its recording) or this request was not normalised. A
-   * region anchored elsewhere but absent here measures 0: that is the signal, not an error.
+   * unanchored (matches nothing in any request of its recording), was created on another recording, or this
+   * request was not normalised. A region anchored elsewhere in its recording but absent here measures 0: that
+   * is the signal, not an error.
    */
   footprintOf(region: Region): number {
-    region.requireAnchored();
+    region.requireAnchored(this);
     this.requireNormalized(`footprintOf(${region.description})`);
     const rawMessages = this.rawMessages();
     let bytes = 0;
