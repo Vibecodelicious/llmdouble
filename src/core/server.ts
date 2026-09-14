@@ -9,6 +9,8 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { load } from '../assert/load.js';
+import type { Recording } from '../assert/recording.js';
 import { anthropicSurface } from '../surfaces/anthropic.js';
 import { IdCounters } from './ids.js';
 import { matchesWhen } from './matcher.js';
@@ -75,8 +77,8 @@ export interface StartServerOptions {
 export interface ServerHandle {
   url: string;
   recordPath: string;
-  /** Stop listening, write the summary line, and return the run counts. */
-  close(): Promise<RunSummary>;
+  /** Stop listening, write the summary line, and return the recording, loaded back from the file (epic C5). */
+  close(): Promise<Recording>;
 }
 
 export async function startServer(options: StartServerOptions): Promise<ServerHandle> {
@@ -107,7 +109,7 @@ export async function startServer(options: StartServerOptions): Promise<ServerHa
   return {
     url,
     recordPath,
-    close: () => closeServer(server, engine),
+    close: () => closeServer(server, engine, recordPath),
   };
 }
 
@@ -116,12 +118,13 @@ function defaultRecordPath(): string {
   return join(tmpdir(), `llmdouble-${stamp}-${process.pid}.jsonl`);
 }
 
-async function closeServer(server: Server, engine: Engine): Promise<RunSummary> {
+async function closeServer(server: Server, engine: Engine, recordPath: string): Promise<Recording> {
   await new Promise<void>((resolve, reject) => {
     server.close((error) => (error ? reject(error) : resolve()));
     server.closeAllConnections();
   });
-  return engine.close();
+  engine.close();
+  return load(recordPath);
 }
 
 type ReceivedBody = { oversized: false; text: string } | { oversized: true };

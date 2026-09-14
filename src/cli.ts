@@ -11,6 +11,7 @@
 import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
+import type { Recording } from './assert/recording.js';
 import type { RequestLine, RunSummary } from './core/recording.js';
 import { ScenarioError } from './core/scenario.js';
 import { startServer } from './core/server.js';
@@ -86,8 +87,8 @@ export function defaultRecordPath(now = new Date()): string {
 export interface ServeHandle {
   url: string;
   recordPath: string;
-  /** Close the server, print the run summary, and return it. */
-  stop(): Promise<RunSummary>;
+  /** Close the server, print the run summary, and return the recording. */
+  stop(): Promise<Recording>;
 }
 
 /** Start `serve`: print the listening line, then one block per request until `stop()`. */
@@ -107,9 +108,9 @@ export async function startServe(options: ServeOptions, io: CliIo): Promise<Serv
     url: server.url,
     recordPath: server.recordPath,
     stop: async () => {
-      const summary = await server.close();
-      io.stdout(`${RULE}\n${formatSummary(summary)}\nrecording: ${server.recordPath}\n`);
-      return summary;
+      const recording = await server.close();
+      io.stdout(`${RULE}\n${formatSummary(recording.summary)}\nrecording: ${server.recordPath}\n`);
+      return recording;
     },
   };
 }

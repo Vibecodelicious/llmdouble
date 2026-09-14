@@ -119,8 +119,8 @@ describe('serve', () => {
     expect(await post(handle.url, body1)).toBe(200);
     expect(await post(handle.url, body2)).toBe(200);
     expect(await post(handle.url, body3, '/other')).toBe(404);
-    const summary = await handle.stop();
-    expect(summary).toEqual({ scripted: 2, served: 1, repeated: 0, asides: 1, unmatched: 1, ambiguous: 0, invalid: 0 });
+    const { summary } = await handle.stop();
+    expect(summary).toEqual({ scripted: 2, served: 1, repeated: 0, asides: 1, unmatched: 1, ambiguous: 0, invalid: 0, complete: true });
     const blocks = out.out.split('─'.repeat(60));
     expect(blocks).toHaveLength(5);
     const clock = '\\d\\d:\\d\\d:\\d\\d';

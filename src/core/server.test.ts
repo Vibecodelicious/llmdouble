@@ -80,16 +80,20 @@ function textOf(sse: string): string {
 }
 
 describe('startServer', () => {
-  test('binds 127.0.0.1 on an ephemeral port and close() returns the counts', async () => {
+  test('binds 127.0.0.1 on an ephemeral port and close() returns the recording loaded back from the file', async () => {
     const server = await start();
     expect(server.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     expect(new URL(server.url).port).not.toBe('0');
-    const summary = await open.pop()!.close();
-    expect(summary).toEqual({ scripted: 3, served: 0, repeated: 0, asides: 0, unmatched: 0, ambiguous: 0, invalid: 0 });
+    const recording = await open.pop()!.close();
+    expect(recording.path).toBe(server.recordPath);
+    expect(recording.count).toBe(0);
+    expect(recording.summary).toEqual({ scripted: 3, served: 0, repeated: 0, asides: 0, unmatched: 0, ambiguous: 0, invalid: 0, complete: true });
     const file = readRecording(server.recordPath);
     expect(file.run.url).toBe(server.url);
     expect(file.run.scenario).toBeNull();
-    expect(file.summary).toEqual({ type: 'summary', ...summary });
+    expect(recording.run).toEqual(file.run);
+    const { complete: _complete, ...counts } = recording.summary;
+    expect(file.summary).toEqual({ type: 'summary', ...counts });
   });
 
   test('close() releases the port', async () => {
@@ -156,8 +160,8 @@ describe('main sequence', () => {
       { kind: 'repeated', index: 2, aside: null },
     ]);
     expect(lines.map((line) => line.seq)).toEqual([1, 2, 3, 4, 5]);
-    const summary = await open.pop()!.close();
-    expect(summary).toEqual({ scripted: 3, served: 5, repeated: 2, asides: 0, unmatched: 0, ambiguous: 0, invalid: 0 });
+    const { summary } = await open.pop()!.close();
+    expect(summary).toEqual({ scripted: 3, served: 5, repeated: 2, asides: 0, unmatched: 0, ambiguous: 0, invalid: 0, complete: true });
   });
 
   test('streams the exact SSE lifecycle with scripted usage and monotonic ids', async () => {
@@ -209,8 +213,8 @@ describe('asides', () => {
     expect(textOf(main.body)).toBe('first');
     const byModel = await send(server.url, { body: messages('bg', { model: 'claude-3-5-haiku' }) });
     expect(textOf(byModel.body)).toBe('aside two');
-    const summary = await open.pop()!.close();
-    expect(summary).toEqual({ scripted: 3, served: 1, repeated: 0, asides: 2, unmatched: 0, ambiguous: 0, invalid: 0 });
+    const { summary } = await open.pop()!.close();
+    expect(summary).toEqual({ scripted: 3, served: 1, repeated: 0, asides: 2, unmatched: 0, ambiguous: 0, invalid: 0, complete: true });
     const file = readRecording(server.recordPath);
     expect(file.requests.map((line) => line.served)).toEqual([
       { kind: 'aside', index: 0, aside: 'title' },
@@ -227,7 +231,7 @@ describe('asides', () => {
     expect(res.status).toBe(500);
     expect(JSON.parse(res.body)).toEqual({ type: 'error', error: { type: 'ambiguous_match', message: expect.stringContaining('More than one aside') } });
     expect(textOf((await send(server.url, { body: messages('next') })).body)).toBe('first');
-    const summary = await open.pop()!.close();
+    const { summary } = await open.pop()!.close();
     expect(summary.ambiguous).toBe(1);
     const [line] = readRecording(server.recordPath).requests;
     expect(line!.served).toEqual({ kind: 'ambiguous', index: null, aside: null });
@@ -254,7 +258,7 @@ describe('error matrix', () => {
     expect(body.type).toBe('error');
     expect(body.error.type).toBe(type);
     expect(typeof body.error.message).toBe('string');
-    const summary = await open.pop()!.close();
+    const { summary } = await open.pop()!.close();
     expect(summary.served).toBe(0);
     const [line] = readRecording(server.recordPath).requests;
     expect(line).toMatchObject({ seq: 1, status, surface, served: { kind, index: null, aside: null }, responseBody: res.body });
