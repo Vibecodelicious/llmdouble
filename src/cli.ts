@@ -2,16 +2,20 @@
 // The `llmdouble` command (epic C6).
 //
 //   llmdouble serve --scenario <file.json> [--port N] [--record <path.jsonl>] [--raw]
-//   llmdouble diff <recording.jsonl> <N> <M>     (arrives in story 2)
+//   llmdouble diff <recording.jsonl> <N> <M>
 //
 // `serve` prints one block per request: seq, path, status, served kind,
 // message count, tool count, total bytes, and the byte delta from the
-// previous request. `--raw` also prints the body.
+// previous request. `--raw` also prints the body. `diff` prints the JSON
+// paths at which two requests' bodies differ, one per line.
 
 import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
+import { diffBodies } from './assert/divergence.js';
+import { load } from './assert/load.js';
 import type { Recording } from './assert/recording.js';
+import { BlockedError } from './assert/verdict.js';
 import type { RequestLine, RunSummary } from './core/recording.js';
 import { ScenarioError } from './core/scenario.js';
 import { startServer } from './core/server.js';
@@ -23,7 +27,14 @@ export interface CliIo {
 
 export const USAGE = `Usage:
   llmdouble serve --scenario <file.json> [--port N] [--record <path.jsonl>] [--raw]
-  llmdouble diff <recording.jsonl> <N> <M>     (arrives in story 2)
+  llmdouble diff <recording.jsonl> <N> <M>
+`;
+
+export const DIFF_USAGE = `Usage: llmdouble diff <recording.jsonl> <N> <M>
+
+Print the JSON paths at which request N's body differs from request M's, one per line,
+both requests taken from the one recording. Exits 0 whether or not they differ, and 2
+when an argument is bad, the recording cannot be read, or a request number is absent.
 `;
 
 export const SERVE_USAGE = `Usage: llmdouble serve --scenario <file.json> [--port N] [--record <path.jsonl>] [--raw]
@@ -172,12 +183,7 @@ export async function main(argv: string[], io: CliIo, untilStop: () => Promise<v
     io.stdout(USAGE);
     return command === undefined ? 2 : 0;
   }
-  if (command === 'diff') {
-    // Requires: Story 2 - Assertion library (Divergence)
-    // Integrate in: Story 2 - `llmdouble diff <recording.jsonl> <N> <M>`
-    io.stderr('llmdouble diff arrives in story 2\n');
-    return 2;
-  }
+  if (command === 'diff') return runDiff(rest, io);
   if (command !== 'serve') {
     io.stderr(`unknown command: ${command}\n${USAGE}`);
     return 2;
@@ -200,6 +206,45 @@ export async function main(argv: string[], io: CliIo, untilStop: () => Promise<v
   }
   await untilStop();
   await handle.stop();
+  return 0;
+}
+
+/** `llmdouble diff <recording.jsonl> <N> <M>`: the differing paths between two requests of one recording. */
+export function runDiff(args: string[], io: CliIo): number {
+  if (args.includes('-h') || args.includes('--help')) {
+    io.stdout(DIFF_USAGE);
+    return 0;
+  }
+  if (args.length !== 3) {
+    io.stderr(`diff takes a recording and two request numbers, got ${args.length} argument${args.length === 1 ? '' : 's'}\n${DIFF_USAGE}`);
+    return 2;
+  }
+  const [path, ...numbers] = args as [string, string, string];
+  const seqs = numbers.map(Number);
+  if (seqs.some((n) => !Number.isInteger(n) || n < 1)) {
+    io.stderr(`request numbers must be positive integers, got ${numbers.map((n) => JSON.stringify(n)).join(' and ')}\n${DIFF_USAGE}`);
+    return 2;
+  }
+  const [n, m] = seqs as [number, number];
+  let recording: Recording;
+  try {
+    recording = load(path);
+  } catch (error) {
+    io.stderr(`${(error as Error).message}\n`);
+    return 2;
+  }
+  let left: Recording['requests'][number];
+  let right: Recording['requests'][number];
+  try {
+    left = recording.request(n);
+    right = recording.request(m);
+  } catch (error) {
+    if (!(error instanceof BlockedError)) throw error;
+    io.stderr(`${error.verdict.claim}\n`);
+    return 2;
+  }
+  const paths = diffBodies(left.raw.body, right.raw.body);
+  io.stdout(paths.length === 0 ? `request ${n} and request ${m} are identical\n` : paths.map((p) => `${p}\n`).join(''));
   return 0;
 }
 

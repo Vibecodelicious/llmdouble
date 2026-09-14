@@ -1,8 +1,9 @@
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, test } from 'vitest';
-import { defaultRecordPath, formatRequestBlock, formatSummary, main, parseServeArgs, startServe, type CliIo } from './cli.js';
+import { defaultRecordPath, formatRequestBlock, formatSummary, main, parseServeArgs, runDiff, startServe, type CliIo } from './cli.js';
 import { readRecording, type RequestLine } from './core/recording.js';
 
 const dir = mkdtempSync(join(tmpdir(), 'llmdouble-cli-'));
@@ -141,6 +142,55 @@ describe('serve', () => {
   });
 });
 
+const PRUNE_FIXTURE = resolve(dirname(fileURLToPath(import.meta.url)), 'assert/fixtures/prune.jsonl');
+
+describe('diff', () => {
+  test('prints the divergence paths between two requests of one recording, one per line, and exits 0', () => {
+    const out = io();
+    expect(runDiff([PRUNE_FIXTURE, '1', '3'], out)).toBe(0);
+    expect(out.err).toBe('');
+    // Request 3 replaced the four archived messages with a placeholder and grew by two turns, so every
+    // message content differs; message 1's content is a string on one side and an array on the other,
+    // which is one leaf.
+    expect(out.out).toBe(['$.messages[0].content', '$.messages[1].content', '$.messages[2].content', '$.messages[3].content', '$.messages[4].content', ''].join('\n'));
+    const between = io();
+    expect(runDiff([PRUNE_FIXTURE, '1', '2'], between)).toBe(0);
+    expect(between.out).toBe('$.messages[5]\n$.messages[6]\n');
+  });
+
+  test('says so when the two requests are identical', () => {
+    const out = io();
+    expect(runDiff([PRUNE_FIXTURE, '2', '2'], out)).toBe(0);
+    expect(out.out).toBe('request 2 and request 2 are identical\n');
+  });
+
+  test('exits 2 with a message when a seq is absent', () => {
+    const out = io();
+    expect(runDiff([PRUNE_FIXTURE, '1', '9'], out)).toBe(2);
+    expect(out.out).toBe('');
+    expect(out.err).toBe(`request 9 is absent: recording ${PRUNE_FIXTURE} has 3 requests\n`);
+  });
+
+  test('exits 2 on a bad argument count, a non-integer, or an unreadable recording; --help exits 0', () => {
+    expect(runDiff([PRUNE_FIXTURE, '1'], io())).toBe(2);
+    const bad = io();
+    expect(runDiff([PRUNE_FIXTURE, '1', 'x'], bad)).toBe(2);
+    expect(bad.err).toContain('request numbers must be positive integers, got "1" and "x"');
+    expect(runDiff([PRUNE_FIXTURE, '0', '1'], io())).toBe(2);
+    const missing = io();
+    expect(runDiff([join(dir, 'missing.jsonl'), '1', '2'], missing)).toBe(2);
+    expect(missing.err).toContain('ENOENT');
+    const notARecording = join(dir, 'not-a-recording.jsonl');
+    writeFileSync(notARecording, '{"type":"summary"}\n');
+    const malformed = io();
+    expect(runDiff([notARecording, '1', '2'], malformed)).toBe(2);
+    expect(malformed.err).toContain('first line must be a run line');
+    const help = io();
+    expect(runDiff(['--help'], help)).toBe(0);
+    expect(help.out).toContain('Usage: llmdouble diff');
+  });
+});
+
 describe('main', () => {
   test('serve --help prints the serve usage and exits 0', async () => {
     const out = io();
@@ -157,10 +207,10 @@ describe('main', () => {
     expect(await main(['--help'], io(), () => Promise.resolve())).toBe(0);
   });
 
-  test('diff is a placeholder that exits 2', async () => {
+  test('diff routes to runDiff', async () => {
     const out = io();
-    expect(await main(['diff', 'r.jsonl', '1', '2'], out, () => Promise.resolve())).toBe(2);
-    expect(out.err).toContain('arrives in story 2');
+    expect(await main(['diff', PRUNE_FIXTURE, '1', '1'], out, () => Promise.resolve())).toBe(0);
+    expect(out.out).toBe('request 1 and request 1 are identical\n');
   });
 
   test('unknown command and bad serve flags exit 2', async () => {
